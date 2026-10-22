@@ -1,0 +1,148 @@
+;;; lispm-remote-node-test.el --- Tests of the Rings node in Emacs -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026  Ryan.K
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU Affero General Public License as published
+;; by the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU Affero General Public License for more details.
+
+;; You should have received a copy of the GNU Affero General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
+;; Two nodes in one Emacs connect over WebRTC on this computer, the offer
+;; and answer passed by hand, and exchange frames.  The module must be
+;; built (`make module'); without it, the tests that need it are skipped.
+
+;;; Code:
+
+(require 'ert)
+(require 'lispm-remote-node)
+
+(declare-function lispm-remote-core-account-did "lispm-remote-core")
+(declare-function lispm-remote-core-namespace "lispm-remote-core")
+
+(defconst lispm-remote-node-test--patience 30
+  "Seconds a test waits for the network.")
+
+(defun lispm-remote-node-test--module-p ()
+  "Return non-nil when the built module can be loaded."
+  (let ((lispm-remote-module-source 'build))
+    (and (ignore-errors (lispm-remote-module--built-file))
+         (file-readable-p (lispm-remote-module--built-file))
+         (progn (lispm-remote-module-load) t))))
+
+(defun lispm-remote-node-test--wait (predicate)
+  "Process output until PREDICATE returns non-nil, and return its value.
+Fail after `lispm-remote-node-test--patience' seconds."
+  (let ((deadline (+ (float-time) lispm-remote-node-test--patience))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.05))
+    (or value (ert-fail "the network did not answer in time"))))
+
+(defun lispm-remote-node-test--ask (node method params)
+  "Return the result of the request METHOD with PARAMS on NODE."
+  (let (done)
+    (lispm-remote-node-request node method params
+                               (lambda (result error)
+                                 (setq done (if error (list :error error) (list :result result)))))
+    (lispm-remote-node-test--wait (lambda () done))
+    (when (plist-get done :error)
+      (ert-fail (format "%s failed: %s" method (plist-get done :error))))
+    (plist-get done :result)))
+
+(defun lispm-remote-node-test--connected-p (node did)
+  "Return non-nil when NODE is connected to the peer DID."
+  (seq-some (lambda (peer)
+              (and (equal (alist-get 'did peer) did)
+                   (equal (alist-get 'state peer) "Connected")))
+            (alist-get 'peers (lispm-remote-node-test--ask node "listPeers" nil))))
+
+(defun lispm-remote-node-test--connect (a b)
+  "Connect node A to node B, passing the offer and answer by hand."
+  (let* ((offer (lispm-remote-node-test--ask
+                 a "createOffer" `((did . ,(lispm-remote-node-did b)))))
+         (answer (lispm-remote-node-test--ask
+                  b "answerOffer" `((offer . ,(alist-get 'offer offer))))))
+    (lispm-remote-node-test--ask a "acceptAnswer" `((answer . ,(alist-get 'answer answer))))
+    (lispm-remote-node-test--wait
+     (lambda () (lispm-remote-node-test--connected-p a (lispm-remote-node-did b))))))
+
+(ert-deftest lispm-remote-node-test-account-is-kept-private ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (let* ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
+         (account (lispm-remote-node-account)))
+    (unwind-protect
+        (progn
+          (should (equal (lispm-remote-node-account) account))
+          (should (= (file-modes (lispm-remote-node-account-file)) #o600))
+          (should (string-prefix-p "0x" (lispm-remote-core-account-did account))))
+      (delete-directory lispm-remote-directory t))))
+
+(ert-deftest lispm-remote-node-test-two-nodes-exchange-frames ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (let* (to-b to-a sent
+         (a (lispm-remote-node-start (lispm-remote-core-generate-account)
+                                     (lambda (from frame) (push (cons from frame) to-a))))
+         (b (lispm-remote-node-start (lispm-remote-core-generate-account)
+                                     (lambda (from frame) (push (cons from frame) to-b)))))
+    (unwind-protect
+        (progn
+          (should (equal (lispm-remote-core-namespace) "lispm-remote/1"))
+          (lispm-remote-node-test--connect a b)
+          (lispm-remote-node-send a (lispm-remote-node-did b) "\0\1\377to b"
+                                  (lambda (ok error) (setq sent (or ok error))))
+          (lispm-remote-node-test--wait (lambda () (and sent to-b)))
+          (should (eq sent t))
+          (should (equal (car to-b) (cons (lispm-remote-node-did a) "\0\1\377to b")))
+          (should-not (multibyte-string-p (cdar to-b)))
+          (lispm-remote-node-send b (lispm-remote-node-did a) "to a")
+          (lispm-remote-node-test--wait (lambda () to-a))
+          (should (equal (car to-a) (cons (lispm-remote-node-did b) "to a"))))
+      (lispm-remote-node-stop a)
+      (lispm-remote-node-stop b))
+    (should-not (lispm-remote-node-live-p a))
+    (should-not (process-live-p (lispm-remote-node-process a)))))
+
+(ert-deftest lispm-remote-node-test-failures-reach-the-callback ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (let* (outcome
+         (a (lispm-remote-node-start (lispm-remote-core-generate-account))))
+    (unwind-protect
+        (progn
+          (lispm-remote-node-send a "0x0000000000000000000000000000000000000001" "x"
+                                  (lambda (ok error) (setq outcome (list ok error))))
+          (lispm-remote-node-test--wait (lambda () outcome))
+          (should-not (car outcome))
+          (should (stringp (cadr outcome)))
+          (should-error (lispm-remote-node-send a "not a did" "x"))
+          (setq outcome nil)
+          (lispm-remote-node-request a "noSuchMethod" nil
+                                     (lambda (result error) (setq outcome (list result error))))
+          (lispm-remote-node-test--wait (lambda () outcome))
+          (should-not (car outcome))
+          (should (stringp (cadr outcome))))
+      (lispm-remote-node-stop a))))
+
+(ert-deftest lispm-remote-node-test-without-a-published-module-download-explains ()
+  (let ((lispm-remote-module-source 'download))
+    (should-error (lispm-remote-module-file) :type 'user-error)))
+
+(ert-deftest lispm-remote-node-test-targets ()
+  (should (equal (lispm-remote-module--target "aarch64-apple-darwin24.1.0") "aarch64-apple-darwin"))
+  (should (equal (lispm-remote-module--target "x86_64-pc-linux-gnu") "x86_64-unknown-linux-gnu"))
+  (should-not (lispm-remote-module--target "riscv64-unknown-linux-gnu")))
+
+;;; lispm-remote-node-test.el ends here
