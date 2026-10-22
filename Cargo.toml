@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[workspace]
+resolver = "3"
+members = ["crates/protocol"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-or-later"
+authors = ["Ryan.K"]
+repository = "https://github.com/LispMachineLab/lispm-remote"
+
+[workspace.dependencies]
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+blake2 = { version = "0.10", default-features = false }
+chacha20 = { version = "0.9", default-features = false, features = ["zeroize"] }
+proptest = "1"
+# Without "std" and "use-getrandom": randomness reaches snow only through
+# the seeded resolver, so a handshake is a function of its inputs.
+snow = { version = "0.10", default-features = false, features = [
+  "use-blake2",
+  "use-chacha20poly1305",
+  "use-curve25519",
+] }
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+as_conversions = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
