@@ -493,7 +493,11 @@ tester, bound as BINDINGS says: (PHONE)."
     (should (equal (car (lispm-remote-test-phone-pairing phone))
                    (lispm-remote-node-did lispm-remote--node)))
     (with-current-buffer lispm-remote--buffer
-      (should (string-search "Paired with Test Phone" (buffer-string))))
+      (should (string-search "Paired with Test Phone" (buffer-string)))
+      ;; The phone opened its session: every step is done.
+      (should (string-search "Session open" (buffer-string)))
+      (should (string-search "✔ Connected" (buffer-string))))
+    (should-not (lispm-remote--waiting-p lispm-remote--offer))
     ;; LispM's state changes while the phone is connected.
     (setq lispm-remote-test--state '((agents . [((name . "coder") (state . "requesting"))])))
     (lispm-remote-state-changed)
@@ -600,6 +604,71 @@ tester, bound as BINDINGS says: (PHONE)."
    "the approval on the phone")
   (lispm-remote-test--command
    phone `((type . "decide") (agent . "tester") (call . ,(car call)) (decision . ,decision))))
+
+;;;; The pairing screen
+
+(defun lispm-remote-test--steps (offer &optional peers)
+  "Return the step states of OFFER with PEERS peers, as a list."
+  (let ((lispm-remote--peers peers))
+    (mapcar #'cdr (lispm-remote--progress offer))))
+
+(ert-deftest lispm-remote-test-the-steps-follow-pairing ()
+  (let ((code '(:token "t")))
+    (should (equal (lispm-remote-test--steps code) '(active active pending pending pending)))
+    (should (equal (lispm-remote-test--steps code 0) '(active active pending pending pending)))
+    (should (equal (lispm-remote-test--steps code 2) '(done active pending pending pending)))
+    (should (equal (lispm-remote-test--steps (append '(:fingerprint "F" :name "N") code))
+                   '(done done done active pending)))
+    (should (equal (lispm-remote-test--steps (append '(:paired "N") code))
+                   '(done done done done active)))
+    (should (equal (lispm-remote-test--steps (append '(:paired "N" :opened t) code))
+                   '(done done done done done)))
+    ;; A code that ends fails the step it waited at.
+    (should (equal (lispm-remote-test--steps (append '(:ended expired) code) 1)
+                   '(done failed pending pending pending)))
+    (should (equal (lispm-remote-test--steps (append '(:ended refused :fingerprint "F") code))
+                   '(done done done failed pending)))))
+
+(ert-deftest lispm-remote-test-the-countdown-bar-keeps-its-width ()
+  (dolist (fraction '(0 0.01 0.13 0.5 0.99 1 1.5 -1))
+    (should (= (length (lispm-remote--bar-text fraction 30)) 30)))
+  (should (string-prefix-p "███" (lispm-remote--bar-text 0.5 30)))
+  (should (string-suffix-p "─" (lispm-remote--bar-text 0.5 30))))
+
+(ert-deftest lispm-remote-test-the-screen-reads-the-same-in-a-terminal ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (let ((lispm-remote--offer (list :token "AQID" :expires (+ (float-time) 90)))
+        (lispm-remote--peers 1)
+        (lispm-remote-offer-seconds 120))
+    (unwind-protect
+        (with-current-buffer (lispm-remote--render)
+          (let ((text (buffer-string)))
+            (should (string-search "✔ Join ── ◉ Scan ── ○ Reach" text))
+            (should (string-search "scan this code" text))
+            (should (string-match-p "1:[23][0-9] left" text))
+            (should (string-search "On Rings, 1 peer" text)))
+          ;; The screen redraws itself while it waits, and stops when
+          ;; the buffer goes.
+          (should lispm-remote--ticker)
+          (let ((ticker lispm-remote--ticker))
+            (kill-buffer)
+            (should-not (memq ticker timer-list))))
+      (when (get-buffer lispm-remote--buffer)
+        (kill-buffer lispm-remote--buffer)))))
+
+(ert-deftest lispm-remote-test-the-screen-stops-ticking-once-paired ()
+  (let ((lispm-remote--offer (list :token "AQID" :expires (+ (float-time) 90)
+                                   :fingerprint "4F2A-91C0" :name "Phone")))
+    (unwind-protect
+        (with-current-buffer (lispm-remote--render)
+          (should (string-search "4F2A-91C0" (buffer-string)))
+          (should (string-search "Approve (a)" (buffer-string)))
+          (should lispm-remote--ticker)
+          (setq lispm-remote--offer (append '(:paired "Phone" :opened t) lispm-remote--offer))
+          (lispm-remote--render)
+          (should-not lispm-remote--ticker)
+          (should (string-search "Paired with Phone" (buffer-string))))
+      (kill-buffer lispm-remote--buffer))))
 
 (ert-deftest lispm-remote-test-a-phone-sees-approvals-and-answers-them ()
   (skip-unless (lispm-remote-node-test--module-p))
