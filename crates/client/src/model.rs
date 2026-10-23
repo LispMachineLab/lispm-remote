@@ -8,8 +8,8 @@
 //!
 //! ```text
 //!   receive : Model × ServerMessage → Model × [Effect]
-//!   Frame(s, base, seq, u):  copy_s at base (or base = 0)  → copy_s ← apply(copy_s, u); Ack s seq
-//!                            otherwise                     → Resync s, once, until a whole frame
+//!   Frame(s, base, seq, u):  the replica of s takes it (see `Replica`):
+//!                            applied → Ack s seq ; stale → nothing ; unbased → Resync s
 //!   Resource chunks:         assembled, then kept only when their hash is the id
 //! ```
 
@@ -18,6 +18,8 @@ use std::collections::HashMap;
 
 use lispm_remote_display::CellPixels;
 use lispm_remote_display::ClientMessage;
+use lispm_remote_display::Received;
+use lispm_remote_display::Replica;
 use lispm_remote_display::ResourceId;
 use lispm_remote_display::Screen;
 use lispm_remote_display::Seq;
@@ -26,7 +28,6 @@ use lispm_remote_display::Size;
 use lispm_remote_display::SurfaceId;
 use lispm_remote_display::Update;
 use lispm_remote_display::Window;
-use lispm_remote_display::apply;
 
 /// The longest resource assembled.
 const MAX_RESOURCE: usize = 16 * 1024 * 1024;
@@ -36,11 +37,17 @@ const MAX_RESOURCE: usize = 16 * 1024 * 1024;
 pub struct Copy {
     /// The window it shows.
     pub window: String,
-    /// The screen, as of `seq`.
-    pub screen: Screen,
-    seq: Seq,
-    /// Waiting for a whole screen after losing track.
-    lost: bool,
+    replica: Replica,
+    blank: Screen,
+}
+
+impl Copy {
+    /// The screen to draw: the newest state, or a blank one of the
+    /// surface's size until the first frame.
+    #[must_use]
+    pub fn screen(&self) -> &Screen {
+        self.replica.screen().unwrap_or(&self.blank)
+    }
 }
 
 /// What the page should do after a message.
@@ -165,9 +172,8 @@ impl Model {
             surface,
             Copy {
                 window,
-                screen: Screen::blank(size),
-                seq: Seq::ZERO,
-                lost: false,
+                replica: Replica::new(),
+                blank: Screen::blank(size),
             },
         );
         effects.push(Effect::Redraw(surface));
@@ -185,29 +191,17 @@ impl Model {
         let Some(copy) = self.surfaces.get_mut(&surface) else {
             return Vec::new();
         };
-        let from = if base == Seq::ZERO {
-            Some(Screen::blank(update.size))
-        } else if !copy.lost && base == copy.seq {
-            Some(copy.screen.clone())
-        } else {
-            None
-        };
-        let next = from.and_then(|from| apply(&from, update).ok());
-        let Some(next) = next else {
-            if copy.lost {
-                return Vec::new();
+        match copy.replica.receive(base, seq, update) {
+            Received::Applied { seq } => {
+                let mut effects = vec![Effect::Send(ClientMessage::Ack { surface, seq })];
+                if !more {
+                    effects.push(Effect::Redraw(surface));
+                }
+                effects
             }
-            copy.lost = true;
-            return vec![Effect::Send(ClientMessage::Resync { surface })];
-        };
-        copy.screen = next;
-        copy.seq = seq;
-        copy.lost = false;
-        let mut effects = vec![Effect::Send(ClientMessage::Ack { surface, seq })];
-        if !more {
-            effects.push(Effect::Redraw(surface));
+            Received::Stale => Vec::new(),
+            Received::Unbased => vec![Effect::Send(ClientMessage::Resync { surface })],
         }
-        effects
     }
 
     fn closed(&mut self, surface: SurfaceId) -> Vec<Effect> {
@@ -347,11 +341,11 @@ mod tests {
             })
         );
         model.receive(frame(1, 2, &screen("ab"), &screen("abc")));
-        assert_eq!(model.shown().unwrap().1.screen, screen("abc"));
+        assert_eq!(*model.shown().unwrap().1.screen(), screen("abc"));
     }
 
     #[test]
-    fn a_frame_for_another_base_asks_once_for_the_whole_screen() {
+    fn a_frame_on_a_state_the_client_lacks_asks_for_the_whole_screen() {
         let mut model = Model::default();
         opened(&mut model);
         let resync = Effect::Send(ClientMessage::Resync {
@@ -361,14 +355,9 @@ mod tests {
             model.receive(frame(5, 6, &screen("a"), &screen("b"))),
             vec![resync]
         );
-        assert!(
-            model
-                .receive(frame(6, 7, &screen("b"), &screen("c")))
-                .is_empty()
-        );
         let blank = Screen::blank(size());
         model.receive(frame(0, 8, &blank, &screen("d")));
-        assert_eq!(model.shown().unwrap().1.screen, screen("d"));
+        assert_eq!(*model.shown().unwrap().1.screen(), screen("d"));
     }
 
     #[test]

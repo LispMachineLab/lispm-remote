@@ -18,17 +18,20 @@
 //!   resource  = SHA-256(bytes)            never inside a frame
 //! ```
 //!
-//! LispM keeps one screen per surface (one LispM window).  A client keeps
-//! a copy at some sequence number `s` and receives
-//! `Frame { base: s, seq: s', update }` with
+//! LispM keeps one screen per surface (one LispM window).  Each frame
+//! names the state it is based on and the state it makes,
+//! `Frame { base, seq, update }`, with
 //!
 //! ```text
-//!   apply(screen_s, update) = Ok(screen_s')        (see `update`)
-//!   apply(a, diff(a, b))     = Ok(b)               for all screens a, b
+//!   apply(screen_base, update) = Ok(screen_seq)     (see `update`)
+//!   apply(a, diff(a, b))       = Ok(b)              for all screens a, b
 //! ```
 //!
-//! A client whose copy is not at `base` asks for a fresh copy (`Resync`),
-//! so lost or late frames cost a redraw, never a wrong screen.
+//! LispM bases a frame on the newest state the client acknowledged, and
+//! the client keeps the recent states it applied ([`Replica`]), so frames
+//! may be lost, repeated or reordered: a lost one is superseded by the
+//! next, a late one is stale, and only a client that lacks a frame's base
+//! asks for a whole screen (`Resync`).
 //!
 //! A placement names its image by content hash.  The client draws it from
 //! its pool and sends `Want` only for an image it has never seen; the
@@ -57,6 +60,7 @@ mod codec;
 mod color;
 mod input;
 mod message;
+mod replica;
 mod resource;
 mod screen;
 mod style;
@@ -84,6 +88,9 @@ pub use message::Seq;
 pub use message::ServerMessage;
 pub use message::SurfaceId;
 pub use message::Window;
+pub use replica::MAX_KEPT;
+pub use replica::Received;
+pub use replica::Replica;
 pub use resource::RESOURCE_CHUNK;
 pub use resource::ResourceId;
 pub use screen::CellRect;

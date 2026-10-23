@@ -218,7 +218,7 @@ impl App {
             render::draw(
                 &self.context,
                 &self.metrics,
-                &copy.screen,
+                copy.screen(),
                 &self.images,
                 THEME,
                 focused,
@@ -236,7 +236,7 @@ impl App {
             return Vec::new();
         };
         let wanted: Vec<ResourceId> = copy
-            .screen
+            .screen()
             .placements
             .iter()
             .map(|placement| placement.resource)

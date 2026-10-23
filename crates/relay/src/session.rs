@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::io::Read;
 use std::io::Write;
+use std::time::Instant;
 
 use lispm_remote_display::ClientMessage;
 use lispm_remote_display::RESOURCE_CHUNK;
@@ -39,6 +40,7 @@ struct Session {
     followers: BTreeMap<SurfaceId, Follower>,
     changes: u64,
     notices: u64,
+    started: Instant,
 }
 
 /// Serves the client on `socket` until it leaves.  `socket`'s stream
@@ -50,6 +52,7 @@ pub fn serve<S: Read + Write>(hub: &Hub, socket: &mut WebSocket<S>) -> Result<()
         followers: BTreeMap::new(),
         changes: 0,
         notices: hub.notices.since(u64::MAX).0,
+        started: Instant::now(),
     };
     let result = session.run(hub, socket);
     hub.client_left();
@@ -148,9 +151,10 @@ impl Session {
             let Some(follower) = self.followers.get_mut(&surface.id()) else {
                 continue;
             };
-            if follower.behind(surface.version()) && !follower.waiting() {
+            let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            if follower.due(now, surface.version()) {
                 let (version, screen) = surface.snapshot();
-                for frame in follower.frames(version, &screen) {
+                for frame in follower.frames(now, version, &screen) {
                     send(socket, &frame)?;
                 }
             }
