@@ -26,6 +26,8 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 
 use lispm_remote_display::CellPixels;
 use lispm_remote_display::ServerMessage;
@@ -66,6 +68,14 @@ pub enum Request {
     },
     /// The number of connected clients changed.
     Clients(usize),
+    /// Send `payload` to the client on channel `client` (see
+    /// `crate::channel`).
+    Send {
+        /// The client's number.
+        client: u64,
+        /// The message, encoded.
+        payload: Vec<u8>,
+    },
 }
 
 /// Bells and the clipboard, numbered for sessions to follow.
@@ -118,6 +128,8 @@ pub struct Hub {
     requests: Mutex<VecDeque<Request>>,
     pending: AtomicBool,
     clients: AtomicUsize,
+    channels: Mutex<BTreeMap<u64, Sender<Vec<u8>>>>,
+    next_channel: AtomicU64,
     waker: Box<dyn Wake>,
 }
 
@@ -135,6 +147,8 @@ impl Hub {
             requests: Mutex::new(VecDeque::new()),
             pending: AtomicBool::new(false),
             clients: AtomicUsize::new(0),
+            channels: Mutex::new(BTreeMap::new()),
+            next_channel: AtomicU64::new(0),
             waker: Box::new(waker),
         }
     }
@@ -242,6 +256,37 @@ impl Hub {
             .unwrap_or_else(PoisonError::into_inner)
             .drain(..)
             .collect()
+    }
+
+    /// Numbers a new channel client and gives the queue its payloads
+    /// come out of.
+    pub(crate) fn register_client(&self) -> (u64, Receiver<Vec<u8>>) {
+        let client = self.next_channel.fetch_add(1, Ordering::AcqRel) + 1;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.channels().insert(client, sender);
+        (client, receiver)
+    }
+
+    fn channels(&self) -> MutexGuard<'_, BTreeMap<u64, Sender<Vec<u8>>>> {
+        self.channels.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Hands `payload` to the session of channel client `client`;
+    /// returns whether it is attached.
+    pub(crate) fn deliver(&self, client: u64, payload: Vec<u8>) -> bool {
+        self.channels()
+            .get(&client)
+            .is_some_and(|sender| sender.send(payload).is_ok())
+    }
+
+    /// Detaches channel client `client`: its session ends.
+    pub fn detach(&self, client: u64) {
+        self.channels().remove(&client);
+    }
+
+    /// Detaches every channel client.
+    pub fn detach_all(&self) {
+        self.channels().clear();
     }
 
     pub(crate) fn client_joined(&self) {

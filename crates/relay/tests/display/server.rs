@@ -186,8 +186,11 @@ fn what_emacs_writes_reaches_the_client_as_frames() {
 
     // Typing on the client reaches the tty as an xterm's input.
     let key = ClientMessage::Input {
-        surface: surface.id(),
-        input: lispm_remote_display::Input::Text("x".to_owned()),
+        first: Seq::new(1),
+        inputs: vec![(
+            surface.id(),
+            lispm_remote_display::Input::Text("x".to_owned()),
+        )],
     };
     socket.send(Message::Binary(key.encode().into())).unwrap();
     hub.close(surface.id());

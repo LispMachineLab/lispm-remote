@@ -218,7 +218,7 @@ fn websocket(hub: &Hub, stream: TcpStream, token: &str) {
     if socket.get_mut().set_read_timeout(Some(TICK)).is_err() {
         return;
     }
-    let _ = session::serve(hub, &mut socket);
+    let _ = session::serve(hub, &mut session::Socket(socket));
 }
 
 /// Whether a WebSocket request carries the token and comes from this

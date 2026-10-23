@@ -241,6 +241,7 @@ impl ServerMessage {
             Self::Unknown { id } => encode_tagged(6, |out| id.put(out)),
             Self::Clipboard(text) => encode_tagged(7, |out| text.put(out)),
             Self::Bell { surface } => encode_tagged(8, |out| surface.put(out)),
+            Self::InputAck { seq } => encode_tagged(9, |out| seq.put(out)),
         }
     }
 
@@ -281,6 +282,9 @@ impl ServerMessage {
                 8 => Self::Bell {
                     surface: Wire::get(input)?,
                 },
+                9 => Self::InputAck {
+                    seq: Wire::get(input)?,
+                },
                 tag => {
                     return Err(CodecError::Tag {
                         what: "message",
@@ -312,9 +316,9 @@ impl ClientMessage {
                 size.put(out);
                 cell.put(out);
             }),
-            Self::Input { surface, input } => encode_tagged(4, |out| {
-                surface.put(out);
-                input.put(out);
+            Self::Input { first, inputs } => encode_tagged(4, |out| {
+                first.put(out);
+                inputs.put(out);
             }),
             Self::Ack { surface, seq } => encode_tagged(5, |out| {
                 surface.put(out);
@@ -322,6 +326,8 @@ impl ClientMessage {
             }),
             Self::Resync { surface } => encode_tagged(6, |out| surface.put(out)),
             Self::Want { id } => encode_tagged(7, |out| id.put(out)),
+            Self::Hello { first } => encode_tagged(8, |out| first.put(out)),
+            Self::Bye => encode_tagged(9, |_| {}),
         }
     }
 
@@ -347,8 +353,8 @@ impl ClientMessage {
                     cell: CellPixels::get(input)?,
                 },
                 4 => Self::Input {
-                    surface: Wire::get(input)?,
-                    input: Input::get(input)?,
+                    first: Wire::get(input)?,
+                    inputs: Vec::get(input)?,
                 },
                 5 => Self::Ack {
                     surface: Wire::get(input)?,
@@ -360,6 +366,10 @@ impl ClientMessage {
                 7 => Self::Want {
                     id: ResourceId::get(input)?,
                 },
+                8 => Self::Hello {
+                    first: Wire::get(input)?,
+                },
+                9 => Self::Bye,
                 tag => {
                     return Err(CodecError::Tag {
                         what: "message",

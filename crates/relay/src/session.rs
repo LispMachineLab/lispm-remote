@@ -3,11 +3,14 @@
 // Copyright (C) 2026  Ryan.K
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! A session: one client on one connection, served by one thread.  The
-//! thread alternates between reading what the client says (with a short
-//! timeout) and bringing the client up to date: the window list, the
-//! surfaces, their screens, the notices.  It never blocks the surfaces'
-//! readers; a slow client only slows its own thread.
+//! A session: one client, served by one thread.  The thread alternates
+//! between taking what the client says (waiting a moment at most) and
+//! bringing the client up to date: the window list, the surfaces, their
+//! screens, the notices.  It never blocks the surfaces' readers; a slow
+//! client only slows its own thread.
+//!
+//! The client is reached through a [`Transport`]: a WebSocket ([`Socket`])
+//! or a LispM Remote channel (`crate::channel`).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -16,8 +19,10 @@ use std::io::Write;
 use std::time::Instant;
 
 use lispm_remote_display::ClientMessage;
+use lispm_remote_display::Input;
 use lispm_remote_display::RESOURCE_CHUNK;
 use lispm_remote_display::ResourceId;
+use lispm_remote_display::Seq;
 use lispm_remote_display::ServerMessage;
 use lispm_remote_display::SurfaceId;
 use tungstenite::Message;
@@ -26,13 +31,73 @@ use tungstenite::WebSocket;
 use crate::follow::Follower;
 use crate::hub::Hub;
 use crate::hub::Request;
+use crate::order::Order;
 
 /// Why a session ended.
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
-    /// The connection failed or closed.
-    #[error("the connection ended: {0}")]
+    /// The connection failed.
+    #[error("the connection failed: {0}")]
     Connection(#[from] tungstenite::Error),
+    /// The client left.
+    #[error("the client left")]
+    Closed,
+}
+
+/// What a session reaches its client through.
+pub trait Transport {
+    /// The next message from the client, waiting a moment at most;
+    /// `Ok(None)` when none came.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError`] when the client is gone.
+    fn receive(&mut self) -> Result<Option<Vec<u8>>, SessionError>;
+
+    /// Sends `message` to the client.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError`] when the client is gone.
+    fn send(&mut self, message: Vec<u8>) -> Result<(), SessionError>;
+}
+
+/// A WebSocket whose stream times reads out.
+pub struct Socket<S>(pub WebSocket<S>);
+
+fn timed_out(error: &tungstenite::Error) -> bool {
+    matches!(error, tungstenite::Error::Io(error)
+        if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut))
+}
+
+impl<S: Read + Write> Transport for Socket<S> {
+    fn receive(&mut self) -> Result<Option<Vec<u8>>, SessionError> {
+        match self.0.read() {
+            Ok(Message::Binary(bytes)) => Ok(Some(bytes.to_vec())),
+            Ok(Message::Close(_))
+            | Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                Err(SessionError::Closed)
+            }
+            Ok(_) => Ok(None),
+            Err(error) if timed_out(&error) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn send(&mut self, message: Vec<u8>) -> Result<(), SessionError> {
+        self.0.send(Message::Binary(message.into()))?;
+        Ok(())
+    }
+}
+
+/// Gives each of `inputs`, taken in order, to the surface it was made on;
+/// a surface since closed takes nothing.
+fn hand_over(hub: &Hub, inputs: Vec<(SurfaceId, Input)>) {
+    for (surface, input) in inputs {
+        if let Some(surface) = hub.surface(surface) {
+            let _ = surface.input(&input);
+        }
+    }
 }
 
 /// What a session knows of its client.
@@ -41,58 +106,78 @@ struct Session {
     changes: u64,
     notices: u64,
     started: Instant,
+    inputs: Order<(SurfaceId, Input)>,
+    /// The last input acknowledged to the client.
+    acknowledged: u64,
 }
 
-/// Serves the client on `socket` until it leaves.  `socket`'s stream
-/// should time reads out, so the session keeps the client up to date
-/// while it is silent.
-pub fn serve<S: Read + Write>(hub: &Hub, socket: &mut WebSocket<S>) -> Result<(), SessionError> {
+/// Serves the client on `transport` until it leaves.
+///
+/// # Errors
+///
+/// [`SessionError::Connection`] when the connection failed; a client
+/// that leaves ends the session without an error.
+pub fn serve(hub: &Hub, transport: &mut impl Transport) -> Result<(), SessionError> {
     hub.client_joined();
     let mut session = Session {
         followers: BTreeMap::new(),
         changes: 0,
         notices: hub.notices.since(u64::MAX).0,
         started: Instant::now(),
+        inputs: Order::default(),
+        acknowledged: 0,
     };
-    let result = session.run(hub, socket);
+    let result = match session.run(hub, transport) {
+        Err(SessionError::Closed) => Ok(()),
+        other => other,
+    };
     hub.client_left();
     result
 }
 
-fn timed_out(error: &tungstenite::Error) -> bool {
-    matches!(error, tungstenite::Error::Io(error)
-        if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut))
-}
-
 impl Session {
-    fn run<S: Read + Write>(
+    /// Milliseconds since the session started.
+    fn now(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Hands over input whose gap waited too long, and acknowledges what
+    /// was taken since the client was last told.
+    fn take_input(
         &mut self,
         hub: &Hub,
-        socket: &mut WebSocket<S>,
+        transport: &mut impl Transport,
     ) -> Result<(), SessionError> {
+        hand_over(hub, self.inputs.release(self.now()));
+        let acknowledged = self.inputs.acknowledged();
+        if acknowledged != self.acknowledged {
+            self.acknowledged = acknowledged;
+            send(
+                transport,
+                &ServerMessage::InputAck {
+                    seq: Seq::new(acknowledged),
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn run(&mut self, hub: &Hub, transport: &mut impl Transport) -> Result<(), SessionError> {
         loop {
-            match socket.read() {
-                Ok(Message::Binary(bytes)) => {
-                    if let Ok(message) = ClientMessage::decode(&bytes) {
-                        self.receive(hub, socket, message)?;
-                    }
+            if let Some(bytes) = transport.receive()? {
+                if let Ok(message) = ClientMessage::decode(&bytes) {
+                    self.receive(hub, transport, message)?;
                 }
-                Ok(Message::Close(_)) => return Ok(()),
-                Ok(_) => {}
-                Err(error) if timed_out(&error) => {}
-                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
-                    return Ok(());
-                }
-                Err(error) => return Err(error.into()),
             }
-            self.catch_up(hub, socket)?;
+            self.take_input(hub, transport)?;
+            self.catch_up(hub, transport)?;
         }
     }
 
-    fn receive<S: Read + Write>(
+    fn receive(
         &mut self,
         hub: &Hub,
-        socket: &mut WebSocket<S>,
+        transport: &mut impl Transport,
         message: ClientMessage,
     ) -> Result<(), SessionError> {
         match message {
@@ -110,9 +195,10 @@ impl Session {
                     let _ = surface.resize(size, cell);
                 }
             }
-            ClientMessage::Input { surface, input } => {
-                if let Some(surface) = hub.surface(surface) {
-                    let _ = surface.input(&input);
+            ClientMessage::Input { first, inputs } => {
+                let now = self.now();
+                for (seq, input) in (first.get()..).zip(inputs) {
+                    hand_over(hub, self.inputs.take(seq, input, now));
                 }
             }
             ClientMessage::Ack { surface, seq } => {
@@ -125,37 +211,37 @@ impl Session {
                     follower.resync();
                 }
             }
-            ClientMessage::Want { id } => send_resource(hub, socket, id)?,
+            ClientMessage::Want { id } => send_resource(hub, transport, id)?,
+            ClientMessage::Hello { first } => {
+                hand_over(hub, self.inputs.start(first.get(), self.now()));
+            }
+            ClientMessage::Bye => return Err(SessionError::Closed),
         }
         Ok(())
     }
 
     /// Sends what changed since the client was last told.
-    fn catch_up<S: Read + Write>(
-        &mut self,
-        hub: &Hub,
-        socket: &mut WebSocket<S>,
-    ) -> Result<(), SessionError> {
+    fn catch_up(&mut self, hub: &Hub, transport: &mut impl Transport) -> Result<(), SessionError> {
         let changes = hub.changes();
         if changes != self.changes {
             self.changes = changes;
-            send(socket, &ServerMessage::Windows(hub.windows()))?;
-            self.announce(hub, socket)?;
+            send(transport, &ServerMessage::Windows(hub.windows()))?;
+            self.announce(hub, transport)?;
         }
         let (seen, notices) = hub.notices.since(self.notices);
         self.notices = seen;
         for notice in &notices {
-            send(socket, notice)?;
+            send(transport, notice)?;
         }
+        let now = self.now();
         for surface in hub.all_surfaces() {
             let Some(follower) = self.followers.get_mut(&surface.id()) else {
                 continue;
             };
-            let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
             if follower.due(now, surface.version()) {
                 let (version, screen) = surface.snapshot();
                 for frame in follower.frames(now, version, &screen) {
-                    send(socket, &frame)?;
+                    send(transport, &frame)?;
                 }
             }
         }
@@ -163,11 +249,7 @@ impl Session {
     }
 
     /// Tells the client of surfaces opened and closed since it last knew.
-    fn announce<S: Read + Write>(
-        &mut self,
-        hub: &Hub,
-        socket: &mut WebSocket<S>,
-    ) -> Result<(), SessionError> {
+    fn announce(&mut self, hub: &Hub, transport: &mut impl Transport) -> Result<(), SessionError> {
         let surfaces = hub.all_surfaces();
         let gone: Vec<SurfaceId> = self
             .followers
@@ -177,7 +259,7 @@ impl Session {
             .collect();
         for surface in gone {
             self.followers.remove(&surface);
-            send(socket, &ServerMessage::Closed { surface })?;
+            send(transport, &ServerMessage::Closed { surface })?;
         }
         for surface in surfaces {
             if self.followers.contains_key(&surface.id()) {
@@ -185,7 +267,7 @@ impl Session {
             }
             let (_, screen) = surface.snapshot();
             send(
-                socket,
+                transport,
                 &ServerMessage::Opened {
                     surface: surface.id(),
                     window: surface.window().to_owned(),
@@ -199,25 +281,21 @@ impl Session {
     }
 }
 
-fn send<S: Read + Write>(
-    socket: &mut WebSocket<S>,
-    message: &ServerMessage,
-) -> Result<(), SessionError> {
-    socket.send(Message::Binary(message.encode().into()))?;
-    Ok(())
+fn send(transport: &mut impl Transport, message: &ServerMessage) -> Result<(), SessionError> {
+    transport.send(message.encode())
 }
 
 /// Sends the resource `id` in chunks, or says it is unknown.
-fn send_resource<S: Read + Write>(
+fn send_resource(
     hub: &Hub,
-    socket: &mut WebSocket<S>,
+    transport: &mut impl Transport,
     id: ResourceId,
 ) -> Result<(), SessionError> {
     let Some(bytes) = hub.pool.get(&id) else {
-        return send(socket, &ServerMessage::Unknown { id });
+        return send(transport, &ServerMessage::Unknown { id });
     };
     let Ok(total) = u32::try_from(bytes.len()) else {
-        return send(socket, &ServerMessage::Unknown { id });
+        return send(transport, &ServerMessage::Unknown { id });
     };
     for (offset, chunk) in (0..)
         .step_by(RESOURCE_CHUNK)
@@ -227,7 +305,7 @@ fn send_resource<S: Read + Write>(
             break;
         };
         send(
-            socket,
+            transport,
             &ServerMessage::Resource {
                 id,
                 total,

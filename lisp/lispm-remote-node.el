@@ -133,7 +133,8 @@ account's records live in memory, for a node that never restarts."
          (account (or account (lispm-remote-node-account)))
          (node (lispm-remote-node--create :frame-function frame-function))
          (process (make-pipe-process
-                   :name "lispm-remote-node" :noquery t :coding 'binary
+                   :name "lispm-remote-node" :buffer " lispm-remote-node"
+                   :noquery t :coding 'binary
                    :filter (lambda (_process _output) (lispm-remote-node--collect node)))))
     (condition-case error
         (setf (lispm-remote-node-handle node)

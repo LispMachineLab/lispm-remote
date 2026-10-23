@@ -1,12 +1,23 @@
-// lispm-remote: the page.
+// lispm-remote: the display's view, mounted in a page.
 //
 // Copyright (C) 2026  Ryan.K
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The page around the model: the WebSocket to LispM, the canvas, the
-//! keyboard (through a hidden text area, so phones show theirs and input
-//! methods work), the pointer and touch, the window list and tabs, and
-//! the image pool (in memory, and in the browser's cache across visits).
+//! The view around the model, as a page mounts it ([`DisplayView`]): the
+//! canvas, the keyboard (through a hidden text area, so phones show
+//! theirs and input methods work), the pointer and touch, the window list
+//! and tabs, and the image pool (in memory, and in the browser's cache
+//! across visits).  The view builds its elements inside the one the page
+//! gives it, and leaves the connection to the page: it sends through a
+//! function and is handed what arrives.
+//!
+//! ```js
+//! const view = new DisplayView(element, bytes => channel.send(bytes));
+//! channel.onopen = () => view.connected();       // sends Hello
+//! channel.onmessage = bytes => view.receive(bytes);
+//! channel.onclose = () => view.disconnected();
+//! view.close();                                  // sends Bye
+//! ```
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -38,7 +49,6 @@ use web_sys::HtmlCanvasElement;
 use web_sys::HtmlElement;
 use web_sys::HtmlTextAreaElement;
 use web_sys::ImageBitmap;
-use web_sys::WebSocket;
 
 use crate::keymap;
 use crate::keymap::KeyFields;
@@ -76,7 +86,9 @@ struct App {
     list: HtmlElement,
     panel: HtmlElement,
     status: HtmlElement,
-    socket: Option<WebSocket>,
+    add: HtmlElement,
+    sender: js_sys::Function,
+    connected: bool,
     model: Model,
     metrics: Metrics,
     images: HashMap<ResourceId, ImageBitmap>,
@@ -87,31 +99,158 @@ struct App {
     wheel: f64,
 }
 
-/// Starts the page.
-///
-/// # Errors
-///
-/// When the page lacks its elements or the browser its canvas.
-#[wasm_bindgen(start)]
-pub fn start() -> Result<(), JsValue> {
-    let app = Rc::new(RefCell::new(App::new()?));
-    listen(&app)?;
-    connect(&app)?;
+/// The view's look, added to the page once.
+const STYLE: &str = "\
+.lispm-display{position:relative;display:flex;flex-direction:column;width:100%;height:100%;\
+background:#fff;color:#111;font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}\
+.lispm-display-bar{display:flex;align-items:center;gap:4px;padding:4px 6px;background:#e8e8e8;\
+border-bottom:1px solid #b8b8b8;min-height:34px}\
+.lispm-display-tabs{display:flex;gap:4px;overflow-x:auto;flex:1;scrollbar-width:none}\
+.lispm-display-tabs button,.lispm-display-add{font:inherit;color:inherit;border:1px solid #b8b8b8;\
+border-radius:5px;background:transparent;padding:3px 8px;white-space:nowrap;cursor:pointer}\
+.lispm-display-tabs button.active{background:#fff}\
+.lispm-display-tabs .close{margin-left:6px;color:#666}\
+.lispm-display-add{font-size:16px;line-height:1;padding:3px 10px}\
+.lispm-display-status{color:#666;white-space:nowrap}\
+.lispm-display-windows{position:absolute;top:40px;right:6px;max-height:60%;overflow-y:auto;\
+min-width:220px;background:#fff;border:1px solid #b8b8b8;border-radius:6px;\
+box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:2}\
+.lispm-display-windows[hidden]{display:none}\
+.lispm-display-windows ul{list-style:none;margin:0;padding:4px}\
+.lispm-display-windows button{display:block;width:100%;text-align:left;font:inherit;color:inherit;\
+border:0;border-radius:4px;background:transparent;padding:6px 8px;cursor:pointer}\
+.lispm-display-windows button:hover{background:#e8e8e8}\
+.lispm-display-screen{position:relative;flex:1;min-height:0}\
+.lispm-display-screen canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none}\
+.lispm-display-screen canvas.bell{filter:invert(1)}\
+.lispm-display-keys{position:absolute;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;\
+padding:0;resize:none}";
+
+/// LispM's windows, redrawn in an element of a page.
+#[wasm_bindgen]
+pub struct DisplayView {
+    app: Shared,
+}
+
+#[wasm_bindgen]
+impl DisplayView {
+    /// A view inside `root`, sending each message to LispM by calling
+    /// `send` with its bytes (a `Uint8Array`).
+    ///
+    /// # Errors
+    ///
+    /// When the browser has no canvas.
+    #[wasm_bindgen(constructor)]
+    pub fn new(root: &HtmlElement, send: js_sys::Function) -> Result<Self, JsValue> {
+        let app = Rc::new(RefCell::new(App::new(root, send)?));
+        listen(&app)?;
+        resend_input(&app)?;
+        Ok(Self { app })
+    }
+
+    /// The channel to LispM opened: start over, and say hello.
+    pub fn connected(&self) {
+        {
+            let mut state = self.app.borrow_mut();
+            state.connected = true;
+            state.model.reset();
+            state.sought.clear();
+            state.set_status("");
+            let hello = state.model.hello();
+            state.send(&hello);
+        }
+        self.app.borrow().render_tabs();
+        schedule_draw(&self.app);
+    }
+
+    /// The channel to LispM closed.
+    pub fn disconnected(&self) {
+        let mut state = self.app.borrow_mut();
+        state.connected = false;
+        state.set_status("Not connected");
+    }
+
+    /// Takes in `bytes`, a message LispM sent.
+    pub fn receive(&self, bytes: &[u8]) {
+        if let Ok(message) = ServerMessage::decode(bytes) {
+            let done = self.app.borrow_mut().model.receive(message);
+            effects(&self.app, done);
+        }
+    }
+
+    /// The view is shown again, or its size changed: fit the window
+    /// shown to it.
+    pub fn fit(&self) {
+        self.app.borrow().fit();
+        schedule_draw(&self.app);
+    }
+
+    /// The view is done: tell LispM to send nothing more.
+    pub fn close(&self) {
+        let mut state = self.app.borrow_mut();
+        state.send(&ClientMessage::Bye);
+        state.connected = false;
+    }
+}
+
+/// Makes the element `tag` with class `class` inside `parent`.
+fn child<T: JsCast>(
+    document: &Document,
+    parent: &web_sys::Element,
+    tag: &str,
+    class: &str,
+) -> Result<T, JsValue> {
+    let element = document.create_element(tag)?;
+    if !class.is_empty() {
+        element.set_class_name(class);
+    }
+    parent.append_child(&element)?;
+    element
+        .dyn_into::<T>()
+        .map_err(|_| JsValue::from_str("an element of the wrong kind"))
+}
+
+/// Adds the view's look to the page, once.
+fn add_style(document: &Document) -> Result<(), JsValue> {
+    if document.get_element_by_id("lispm-display-style").is_none() {
+        let style = document.create_element("style")?;
+        style.set_id("lispm-display-style");
+        style.set_text_content(Some(STYLE));
+        if let Some(head) = document.head() {
+            head.append_child(&style)?;
+        }
+    }
     Ok(())
 }
 
-fn element<T: JsCast>(document: &Document, id: &str) -> Result<T, JsValue> {
-    document
-        .get_element_by_id(id)
-        .and_then(|element| element.dyn_into::<T>().ok())
-        .ok_or_else(|| JsValue::from_str(&format!("the page has no #{id}")))
-}
-
 impl App {
-    fn new() -> Result<Self, JsValue> {
+    fn new(root: &HtmlElement, sender: js_sys::Function) -> Result<Self, JsValue> {
         let window = web_sys::window().ok_or("no window")?;
         let document = window.document().ok_or("no document")?;
-        let canvas: HtmlCanvasElement = element(&document, "canvas")?;
+        add_style(&document)?;
+        let view: web_sys::Element = child(&document, root, "div", "lispm-display")?;
+        let bar: web_sys::Element = child(&document, &view, "div", "lispm-display-bar")?;
+        let tabs: HtmlElement = child(&document, &bar, "nav", "lispm-display-tabs")?;
+        let add: HtmlElement = child(&document, &bar, "button", "lispm-display-add")?;
+        add.set_text_content(Some("+"));
+        add.set_title("Open a window");
+        let status: HtmlElement = child(&document, &bar, "span", "lispm-display-status")?;
+        let panel: HtmlElement = child(&document, &view, "div", "lispm-display-windows")?;
+        panel.set_hidden(true);
+        let list: HtmlElement = child(&document, &panel, "ul", "")?;
+        let screen: web_sys::Element = child(&document, &view, "div", "lispm-display-screen")?;
+        let canvas: HtmlCanvasElement = child(&document, &screen, "canvas", "")?;
+        let keys: HtmlTextAreaElement =
+            child(&document, &screen, "textarea", "lispm-display-keys")?;
+        for (name, value) in [
+            ("aria-label", "Keyboard"),
+            ("autocapitalize", "off"),
+            ("autocomplete", "off"),
+            ("autocorrect", "off"),
+            ("spellcheck", "false"),
+        ] {
+            keys.set_attribute(name, value)?;
+        }
         let context: CanvasRenderingContext2d = canvas
             .get_context("2d")?
             .ok_or("no 2d context")?
@@ -130,16 +269,18 @@ impl App {
             ratio: window.device_pixel_ratio(),
         };
         Ok(Self {
-            keys: element(&document, "keys")?,
-            tabs: element(&document, "tabs")?,
-            list: element(&document, "window-list")?,
-            panel: element(&document, "windows")?,
-            status: element(&document, "status")?,
+            keys,
+            tabs,
+            list,
+            panel,
+            status,
+            add,
+            sender,
+            connected: false,
             window,
             document,
             canvas,
             context,
-            socket: None,
             model: Model::default(),
             metrics,
             images: HashMap::new(),
@@ -152,16 +293,23 @@ impl App {
     }
 
     fn send(&self, message: &ClientMessage) {
-        if let Some(socket) = &self.socket {
-            if socket.ready_state() == WebSocket::OPEN {
-                let _ = socket.send_with_u8_array(&message.encode());
-            }
+        if self.connected {
+            let bytes = Uint8Array::from(message.encode().as_slice());
+            let _ = self.sender.call1(&JsValue::NULL, &bytes);
         }
     }
 
-    fn input(&self, input: Input) {
+    fn input(&mut self, input: Input) {
         if let Some(surface) = self.model.active {
-            self.send(&ClientMessage::Input { surface, input });
+            self.model.input(surface, input);
+            self.flush();
+        }
+    }
+
+    /// Sends the input LispM has not acknowledged, when it is time to.
+    fn flush(&mut self) {
+        if let Some(message) = self.model.flush(now()) {
+            self.send(&message);
         }
     }
 
@@ -259,9 +407,9 @@ impl App {
             let _ = tab.set_attribute(
                 "class",
                 if self.model.active == Some(*id) {
-                    "tab active"
+                    "active"
                 } else {
-                    "tab"
+                    ""
                 },
             );
             if let Ok(close) = self.document.create_element("span") {
@@ -316,7 +464,7 @@ impl App {
         )
     }
 
-    fn pointer(&self, kind: PointerKind, button: Button, x: f64, y: f64, mods: Mods) {
+    fn pointer(&mut self, kind: PointerKind, button: Button, x: f64, y: f64, mods: Mods) {
         let (col, row) = self.cell_at(x, y);
         self.input(Input::Pointer(Pointer {
             kind,
@@ -471,63 +619,24 @@ fn effects(app: &Shared, effects: Vec<Effect>) {
     }
 }
 
-fn connect(app: &Shared) -> Result<(), JsValue> {
-    let (url, status) = {
-        let state = app.borrow();
-        let location = state.window.location();
-        let hash = location.hash()?;
-        let token = hash.strip_prefix("#t=").unwrap_or("");
-        let scheme = if location.protocol()? == "https:" {
-            "wss"
-        } else {
-            "ws"
-        };
-        (
-            format!("{scheme}://{}/ws?t={token}", location.host()?),
-            state.status.clone(),
-        )
-    };
-    status.set_text_content(Some("Connecting\u{2026}"));
-    let socket = WebSocket::new(&url)?;
-    socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
-    let opened = Rc::clone(app);
-    let on_open = Closure::<dyn FnMut()>::new(move || {
-        let mut state = opened.borrow_mut();
-        state.model.reset();
-        state.sought.clear();
-        state.set_status("");
-    });
-    socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-    on_open.forget();
-    let receiving = Rc::clone(app);
-    let on_message =
-        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
-            let bytes = Uint8Array::new(&event.data()).to_vec();
-            if let Ok(message) = ServerMessage::decode(&bytes) {
-                let done = receiving.borrow_mut().model.receive(message);
-                effects(&receiving, done);
-            }
-        });
-    socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-    on_message.forget();
-    let closed = Rc::clone(app);
-    let on_close = Closure::<dyn FnMut()>::new(move || {
-        let window = {
-            let mut state = closed.borrow_mut();
-            state.socket = None;
-            state.set_status("Disconnected; trying again\u{2026}");
-            state.window.clone()
-        };
-        let again = Rc::clone(&closed);
-        let retry = Closure::once_into_js(move || {
-            let _ = connect(&again);
-        });
-        let _ = window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(retry.unchecked_ref(), 2000);
-    });
-    socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-    on_close.forget();
-    app.borrow_mut().socket = Some(socket);
+/// The time in milliseconds.
+fn now() -> u64 {
+    // Saturating: the clock is non-negative and far below u64::MAX.
+    #[allow(clippy::as_conversions)]
+    let now = js_sys::Date::now().max(0.0) as u64;
+    now
+}
+
+/// Sends, every so often, the input gathered or not acknowledged.
+fn resend_input(app: &Shared) -> Result<(), JsValue> {
+    let resending = Rc::clone(app);
+    let tick = Closure::<dyn FnMut()>::new(move || resending.borrow_mut().flush());
+    let window = app.borrow().window.clone();
+    window.set_interval_with_callback_and_timeout_and_arguments_0(
+        tick.as_ref().unchecked_ref(),
+        40,
+    )?;
+    tick.forget();
     Ok(())
 }
 
@@ -549,7 +658,7 @@ fn on<E: JsCast + 'static>(
 }
 
 fn listen(app: &Shared) -> Result<(), JsValue> {
-    let (window, canvas, keys, tabs, list, document) = {
+    let (window, canvas, keys, tabs, list, add) = {
         let state = app.borrow();
         (
             state.window.clone(),
@@ -557,7 +666,7 @@ fn listen(app: &Shared) -> Result<(), JsValue> {
             state.keys.clone(),
             state.tabs.clone(),
             state.list.clone(),
-            state.document.clone(),
+            state.add.clone(),
         )
     };
     listen_keys(app, &keys)?;
@@ -612,7 +721,6 @@ fn listen(app: &Shared) -> Result<(), JsValue> {
         }
     })?;
     let toggling = Rc::clone(app);
-    let add: HtmlElement = element(&document, "add")?;
     on(&add, "click", move |_: web_sys::MouseEvent| {
         let state = toggling.borrow();
         if state.panel.has_attribute("hidden") {
@@ -627,7 +735,7 @@ fn listen(app: &Shared) -> Result<(), JsValue> {
 /// Sends text a person typed (an input method's commit, a phone's
 /// keyboard) as the keys that type it, so Emacs inserts it as typing;
 /// only a paste travels as text, which Emacs takes as a paste.
-fn typed_text(state: &App, text: &str) {
+fn typed_text(state: &mut App, text: &str) {
     for c in text.chars() {
         state.input(Input::Key(Key {
             code: KeyCode::Char(c),
@@ -671,7 +779,7 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
         };
         if let Some(input) = keymap::key_input(fields) {
             event.prevent_default();
-            pressed.borrow().input(input);
+            pressed.borrow_mut().input(input);
         }
     })?;
     let composing = Rc::clone(app);
@@ -690,14 +798,14 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
             let mut state = composed.borrow_mut();
             state.composing = false;
             if let Some(text) = event.data() {
-                typed_text(&state, &text);
+                typed_text(&mut state, &text);
             }
             state.keys.set_value("");
         },
     )?;
     let typed = Rc::clone(app);
     on(keys, "input", move |event: web_sys::InputEvent| {
-        let state = typed.borrow();
+        let mut state = typed.borrow_mut();
         if state.composing || event.is_composing() {
             return;
         }
@@ -710,7 +818,7 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
         let input = match event.input_type().as_str() {
             "insertText" => {
                 if let Some(text) = event.data() {
-                    typed_text(&state, &text);
+                    typed_text(&mut state, &text);
                 }
                 None
             }
@@ -730,7 +838,7 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
             .and_then(|data| data.get_data("text/plain").ok())
         {
             event.prevent_default();
-            pasted.borrow().input(Input::Text(text));
+            pasted.borrow_mut().input(Input::Text(text));
         }
     })?;
     for (event, focused) in [("focus", true), ("blur", false)] {
@@ -739,12 +847,7 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
             // Focus moves while a handler may hold the state; act after it.
             let app = Rc::clone(&app);
             wasm_bindgen_futures::spawn_local(async move {
-                if let Some(surface) = app.borrow().model.active {
-                    app.borrow().send(&ClientMessage::Input {
-                        surface,
-                        input: Input::Focus(focused),
-                    });
-                }
+                app.borrow_mut().input(Input::Focus(focused));
                 schedule_draw(&app);
             });
         })?;

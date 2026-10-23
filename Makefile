@@ -58,10 +58,13 @@ web/node_modules/.package-lock.json: web/package.json web/package-lock.json
 page: web/node_modules/.package-lock.json
 	$(WASM_PACK) build crates/web --release --target web --no-pack \
 	  --out-dir $(CURDIR)/web/pkg --out-name lispm_remote_web
+	$(WASM_PACK) build crates/client --release --target web --no-pack \
+	  --out-dir $(CURDIR)/web/pkg --out-name lispm_remote_client
 	cd web && $(NPM) run build
 	mkdir -p $(PAGE)/pkg $(PAGE)/rings
 	cp web/index.html web/style.css web/vendor/jsQR.js $(PAGE)/
 	cp web/pkg/lispm_remote_web.js web/pkg/lispm_remote_web_bg.wasm $(PAGE)/pkg/
+	cp web/pkg/lispm_remote_client.js web/pkg/lispm_remote_client_bg.wasm $(PAGE)/pkg/
 	cp $(RINGS)/rings_node.js $(RINGS)/rings_node_bg.wasm $(PAGE)/rings/
 
 serve: page
