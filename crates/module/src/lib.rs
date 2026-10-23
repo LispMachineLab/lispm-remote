@@ -8,10 +8,11 @@
 //! behind any NAT, while Emacs is up.
 //!
 //! The node registers one Rings protocol, under [`NAMESPACE`], that hands
-//! every peer's frame to Emacs (`bridge`); the pairing and session
-//! machines of `lispm-remote-protocol` judge the frames there.  [`node`]
-//! is the Rust side, usable and tested without Emacs; the Lisp functions
-//! (`lisp`) wrap it one to one.
+//! every peer's frame to Emacs (`bridge`).  [`node`] is the Rust side,
+//! usable and tested without Emacs; the Lisp functions (`lisp`) wrap it
+//! one to one.  The pairing and session machines of
+//! `lispm-remote-protocol` live in Emacs too (`machines`): Lisp feeds them
+//! the frames and carries out what they return.
 //!
 //! Rings's account is a secp256k1 key the shell stores; the node runs on a
 //! fresh session key that account delegates to at each start.
@@ -20,6 +21,7 @@
 
 mod bridge;
 mod lisp;
+mod machines;
 pub mod node;
 
 pub use node::Account;

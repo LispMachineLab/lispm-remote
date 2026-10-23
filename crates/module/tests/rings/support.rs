@@ -48,7 +48,7 @@ pub struct Peer {
 impl Peer {
     pub fn start() -> Self {
         let bell = Shared::default();
-        let node = Node::start(&Account::generate(), ICE, bell.clone()).unwrap();
+        let node = Node::start(&Account::generate(), ICE, None, bell.clone()).unwrap();
         Self {
             node,
             bell,

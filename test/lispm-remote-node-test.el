@@ -27,13 +27,15 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'lispm-remote-node)
 
 (declare-function lispm-remote-core-account-did "lispm-remote-core")
 (declare-function lispm-remote-core-namespace "lispm-remote-core")
 
-(defconst lispm-remote-node-test--patience 30
-  "Seconds a test waits for the network.")
+(defconst lispm-remote-node-test--patience 90
+  "Seconds a test waits for the network; a stale connection takes WebRTC
+up to about half a minute to give up.")
 
 (defun lispm-remote-node-test--module-p ()
   "Return non-nil when the built module can be loaded."
@@ -42,26 +44,30 @@
          (file-readable-p (lispm-remote-module--built-file))
          (progn (lispm-remote-module-load) t))))
 
-(defun lispm-remote-node-test--wait (predicate)
+(defun lispm-remote-node-test--wait (predicate &optional what)
   "Process output until PREDICATE returns non-nil, and return its value.
-Fail after `lispm-remote-node-test--patience' seconds."
+Fail after `lispm-remote-node-test--patience' seconds, naming WHAT was
+awaited."
   (let ((deadline (+ (float-time) lispm-remote-node-test--patience))
         value)
     (while (and (not (setq value (funcall predicate)))
                 (< (float-time) deadline))
       (accept-process-output nil 0.05))
-    (or value (ert-fail "the network did not answer in time"))))
+    (or value (ert-fail (format "no %s in time" (or what "answer from the network"))))))
+
+(defun lispm-remote-node-test--try (node method params)
+  "Return (RESULT . ERROR) of the request METHOD with PARAMS on NODE."
+  (let (done)
+    (lispm-remote-node-request node method params
+                               (lambda (result error) (setq done (cons result error))))
+    (lispm-remote-node-test--wait (lambda () done) (format "reply to %s" method))))
 
 (defun lispm-remote-node-test--ask (node method params)
   "Return the result of the request METHOD with PARAMS on NODE."
-  (let (done)
-    (lispm-remote-node-request node method params
-                               (lambda (result error)
-                                 (setq done (if error (list :error error) (list :result result)))))
-    (lispm-remote-node-test--wait (lambda () done))
-    (when (plist-get done :error)
-      (ert-fail (format "%s failed: %s" method (plist-get done :error))))
-    (plist-get done :result)))
+  (let ((outcome (lispm-remote-node-test--try node method params)))
+    (when (cdr outcome)
+      (ert-fail (format "%s failed: %s" method (cdr outcome))))
+    (car outcome)))
 
 (defun lispm-remote-node-test--connected-p (node did)
   "Return non-nil when NODE is connected to the peer DID."
@@ -71,14 +77,32 @@ Fail after `lispm-remote-node-test--patience' seconds."
             (alist-get 'peers (lispm-remote-node-test--ask node "listPeers" nil))))
 
 (defun lispm-remote-node-test--connect (a b)
-  "Connect node A to node B, passing the offer and answer by hand."
-  (let* ((offer (lispm-remote-node-test--ask
-                 a "createOffer" `((did . ,(lispm-remote-node-did b)))))
-         (answer (lispm-remote-node-test--ask
-                  b "answerOffer" `((offer . ,(alist-get 'offer offer))))))
+  "Connect node A to node B, passing the offer and answer by hand.
+B refuses A's offers while it still holds a connection to an earlier node
+of A's account, as after A went offline, and A refuses to offer while a
+refused offer of its own is pending; A offers again until both let go,
+as the page does."
+  (let ((deadline (+ (float-time) lispm-remote-node-test--patience))
+        answer)
+    (while (not answer)
+      (let* ((offer (lispm-remote-node-test--try
+                     a "createOffer" `((did . ,(lispm-remote-node-did b)))))
+             (outcome (and (not (cdr offer))
+                           (lispm-remote-node-test--try
+                            b "answerOffer" `((offer . ,(alist-get 'offer (car offer))))))))
+        (cond ((and outcome (not (cdr outcome))) (setq answer (car outcome)))
+              ((< (float-time) deadline) (accept-process-output nil 1))
+              (t (ert-fail (format "connecting failed: %s" (or (cdr offer) (cdr outcome))))))))
     (lispm-remote-node-test--ask a "acceptAnswer" `((answer . ,(alist-get 'answer answer))))
     (lispm-remote-node-test--wait
-     (lambda () (lispm-remote-node-test--connected-p a (lispm-remote-node-did b))))))
+     (lambda () (lispm-remote-node-test--connected-p a (lispm-remote-node-did b)))
+     "connection")))
+
+(defun lispm-remote-node-test--offline (seconds)
+  "Let SECONDS pass, as a device that lost its network does."
+  (let ((until (+ (float-time) seconds)))
+    (while (< (float-time) until)
+      (accept-process-output nil 0.2))))
 
 (ert-deftest lispm-remote-node-test-account-is-kept-private ()
   (skip-unless (lispm-remote-node-test--module-p))
@@ -145,4 +169,5 @@ Fail after `lispm-remote-node-test--patience' seconds."
   (should (equal (lispm-remote-module--target "x86_64-pc-linux-gnu") "x86_64-unknown-linux-gnu"))
   (should-not (lispm-remote-module--target "riscv64-unknown-linux-gnu")))
 
+(provide 'lispm-remote-node-test)
 ;;; lispm-remote-node-test.el ends here

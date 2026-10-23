@@ -32,9 +32,36 @@ its input. That is what lets the tests cover every order of a pairing's events.
 | `crates/module`               | The Emacs module: a Rings node on its own threads inside Emacs     |
 | `lisp/lispm-remote-module.el` | Gets the module and loads it                                       |
 | `lisp/lispm-remote-node.el`   | The node in Lisp: start, connect, send, requests, incoming frames  |
+| `lisp/lispm-remote.el`        | LispM Remote: the QR code, approval, devices, state, reconnecting  |
 
-To come: the phone's page, and `lispm-remote.el`, which shows the QR code and connects the channel
-to LispM's agents.
+To come: the phone's page at lispm.ai/remote, and the browser test that scans the QR code with a
+camera feed and cuts the network.
+
+## Pairing a phone
+
+`M-x lispm-remote-pair` turns on `lispm-remote-mode` and shows a QR code: a picture in a graphical
+Emacs, half blocks in a terminal. Open lispm.ai/remote on the phone and scan it. When the phone asks,
+both screens show the same fingerprint. Press `a` to approve it or `r` to refuse it. The code works
+once, for two minutes. `M-x lispm-remote-devices` lists the paired devices; press `d` there to forget
+one.
+
+While the mode is on, the node joins Rings through `lispm-remote-seeds` (by default
+`node.rings.rs`). It joins again whenever it has lost every peer. When a paired phone opens a session,
+LispM sends it its state, `{"type": "state", "state": …}`, and sends it again whenever it changes. The
+state is Emacs's version and LispM's agents, with what each is doing; `lispm-remote-state-function`
+changes it.
+
+What happens when the network drops:
+
+- **Lost frames.** Rings may lose a frame between hops without saying so. While a phone waits for an
+  answer, it sends its handshake again every two seconds. LispM answers a repeated handshake with the
+  answer it gave the first time, so both ends keep the same keys.
+- **The phone's state.** A phone that has no state yet asks for it with `{"type": "state?"}`.
+- **Message sequences.** Rings refuses a sender whose message sequences go back. A node that restarts
+  with the same account must therefore keep its replay records: this Emacs keeps them in
+  `~/.emacs.d/lispm-remote/rings/`, and the page keeps them in IndexedDB.
+- **Coming back.** A node that comes back while its old connection still looks alive is refused until
+  that connection times out, about five seconds. The phone keeps offering until then.
 
 ## The node in Emacs
 

@@ -25,7 +25,7 @@ test-rust:
 
 test-lisp: module
 	$(EMACS_BATCH) -L test --eval "(setq lispm-remote-module-source 'build)" \
-	  -l lispm-remote-node-test -f ert-run-tests-batch-and-exit
+	  -l lispm-remote-node-test -l lispm-remote-test -f ert-run-tests-batch-and-exit
 
 compile:
 	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile lisp/*.el

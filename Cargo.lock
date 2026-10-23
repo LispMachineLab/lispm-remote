@@ -2229,7 +2229,10 @@ dependencies = [
  "async-trait",
  "bytes",
  "emacs",
+ "getrandom 0.3.4",
+ "hex",
  "lispm-remote-protocol",
+ "qrcode",
  "rings-core",
  "rings-node",
  "rings-rpc",
@@ -2899,6 +2902,12 @@ dependencies = [
  "quote",
  "syn 3.0.9",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"
@@ -3702,7 +3711,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
 dependencies = [
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.23.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",

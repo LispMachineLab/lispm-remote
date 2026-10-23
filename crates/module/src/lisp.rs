@@ -20,6 +20,7 @@
 //! become Lisp errors here.
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use emacs::Env;
@@ -61,13 +62,26 @@ impl Handle {
 /// Start a Rings node for ACCOUNT, a key from
 /// `lispm-remote-core-generate-account', with ICE-SERVERS, a list such
 /// as "stun://stun.l.google.com:19302".  PROCESS is a pipe process; the
-/// module writes to it when events wait.
+/// module writes to it when events wait.  STORE, when non-nil, is the
+/// directory the node keeps its replay records in across restarts.
 #[defun(user_ptr)]
-fn start(env: &Env, account: String, ice_servers: String, process: Value) -> Result<Handle> {
+fn start(
+    env: &Env,
+    account: String,
+    ice_servers: String,
+    process: Value,
+    store: Option<String>,
+) -> Result<Handle> {
     let account = Account::from_hex(&account)?;
     let writer = env.open_channel(process)?;
     let pipe = Pipe(Mutex::new(Box::new(writer)));
-    Ok(Handle(Some(Node::start(&account, &ice_servers, pipe)?)))
+    let store = store.map(PathBuf::from);
+    Ok(Handle(Some(Node::start(
+        &account,
+        &ice_servers,
+        store.as_deref(),
+        pipe,
+    )?)))
 }
 
 /// Stop NODE.  After this, the module no longer writes to its process.
