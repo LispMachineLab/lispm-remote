@@ -107,11 +107,17 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = macOS ]; then
             otool -L "$MODULE"
-            ! otool -L "$MODULE" | tail -n +2 | grep -v -e '^[[:space:]]*/usr/lib/' -e '^[[:space:]]*/System/' -e 'liblispm_remote_module'
+            if otool -L "$MODULE" | tail -n +2 | grep -v -e '^[[:space:]]*/usr/lib/' -e '^[[:space:]]*/System/' -e 'liblispm_remote_module'; then
+              echo "::error::the module needs a library outside the system"
+              exit 1
+            fi
             otool -l "$MODULE" | grep -A3 -e LC_BUILD_VERSION -e LC_VERSION_MIN_MACOSX
           else
             ldd "$MODULE"
-            ! ldd "$MODULE" | grep -i -e 'not found' -e libssl -e libcrypto
+            if ldd "$MODULE" | grep -i -e 'not found' -e libssl -e libcrypto; then
+              echo "::error::the module needs a library the system may not have"
+              exit 1
+            fi
           fi
       - name: Compress
         run: |
