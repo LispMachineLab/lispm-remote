@@ -2,7 +2,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/protocol"]
+members = ["crates/module", "crates/protocol"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,10 @@ base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
 chacha20 = { version = "0.9", default-features = false, features = ["zeroize"] }
 proptest = "1"
+# Rings Network, at a release tag; its crates come from one repository.
+rings-core = { git = "https://github.com/RingsNetwork/rings", tag = "v0.34.2", default-features = false, features = ["default"] }
+rings-node = { git = "https://github.com/RingsNetwork/rings", tag = "v0.34.2", default-features = false, features = ["node"] }
+rings-rpc = { git = "https://github.com/RingsNetwork/rings", tag = "v0.34.2" }
 # Without "std" and "use-getrandom": randomness reaches snow only through
 # the seeded resolver, so a handshake is a function of its inputs.
 snow = { version = "0.10", default-features = false, features = [
@@ -29,7 +33,8 @@ zeroize = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]
 missing_docs = "deny"
-unsafe_code = "forbid"
+# deny, not forbid: the emacs crate's macros allow unsafe code in what they generate.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 as_conversions = "deny"
@@ -40,3 +45,9 @@ todo = "deny"
 unimplemented = "deny"
 unreachable = "deny"
 unwrap_used = "deny"
+
+[profile.release]
+# Rust's default stripping of release libraries leaves the string table of
+# a macOS dylib unaligned, and macOS 26's dyld refuses to load it
+# ("mis-aligned LINKEDIT string pool").
+strip = false

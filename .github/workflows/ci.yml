@@ -18,9 +18,9 @@ jobs:
       - name: Format
         run: cargo fmt --check
       - name: Lint
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy -p lispm-remote-protocol --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test
+        run: cargo test -p lispm-remote-protocol
       - name: WebAssembly
         run: |
           rustup target add wasm32-unknown-unknown

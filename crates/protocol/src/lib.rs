@@ -42,6 +42,7 @@
 //! part of what the owner trusts.
 
 #![deny(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod channel;
 mod clock;

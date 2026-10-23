@@ -26,20 +26,48 @@ its input. That is what lets the tests cover every order of a pairing's events.
 
 ## Layout
 
-| Path              | What it is                                                     |
-|-------------------|----------------------------------------------------------------|
-| `crates/protocol` | The pairing and session state machines, native and WebAssembly |
+| Path                          | What it is                                                         |
+|-------------------------------|--------------------------------------------------------------------|
+| `crates/protocol`             | The pairing and session state machines, native and WebAssembly     |
+| `crates/module`               | The Emacs module: a Rings node on its own threads inside Emacs     |
+| `lisp/lispm-remote-module.el` | Gets the module and loads it                                       |
+| `lisp/lispm-remote-node.el`   | The node in Lisp: start, connect, send, requests, incoming frames  |
 
-To come: the Emacs module that runs a Rings node inside LispM, the phone's page, and
-`lispm-remote.el`, which connects the channel to LispM's agents.
+To come: the phone's page, and `lispm-remote.el`, which shows the QR code and connects the channel
+to LispM's agents.
+
+## The node in Emacs
+
+The node runs on the module's own threads. Emacs starts work and later gets the outcome back
+through callbacks, so it never waits on the network. Frames from other peers arrive in
+`lispm-remote-node-frame-functions`, with the sender's DID as Rings authenticated it.
+
+```elisp
+(setq node (lispm-remote-node-start))
+(lispm-remote-node-connect node "https://node.rings.rs")
+(lispm-remote-node-send node did frame)            ; frame: a unibyte string
+(lispm-remote-node-request node "listPeers" nil
+                           (lambda (result error) ...))
+```
+
+The node's identity is a Rings account key. It is made the first time and kept in
+`~/.emacs.d/lispm-remote/account`, which only you can read.
+
+LispM's modules are meant to be downloaded and checked against pinned checksums. No module is
+published yet, so for now you have to choose to build it: `(setq lispm-remote-module-source 'build)`,
+or `make module`.
 
 ## Build and test
 
 ```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
+make module      # the module, for this computer
+make test        # the Rust tests, then the Lisp tests on the built module
+make compile     # byte-compile the Lisp
 cargo check -p lispm-remote-protocol --target wasm32-unknown-unknown
 ```
+
+The tests start Rings nodes on this computer and connect them over WebRTC by passing the offer and
+answer between them directly, so they need no seed node.
 
 ## License
 
