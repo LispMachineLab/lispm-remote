@@ -153,9 +153,15 @@ mod tests {
         // The slave is in cooked mode, so a newline arrives as CR LF.
         slave.write_all(b"hi\n").unwrap();
         let mut master = pty.master().unwrap();
-        assert!(readable(&master, Duration::from_secs(5)).unwrap());
-        let mut buffer = [0; 16];
-        let n = master.read(&mut buffer).unwrap();
-        assert_eq!(&buffer[..n], b"hi\r\n");
+        // Linux may hand the line over in pieces: "hi", then CR LF.
+        let mut read = Vec::new();
+        while read.len() < 4 {
+            assert!(readable(&master, Duration::from_secs(5)).unwrap());
+            let mut buffer = [0; 16];
+            let n = master.read(&mut buffer).unwrap();
+            assert!(n > 0, "the master closed after {read:?}");
+            read.extend_from_slice(&buffer[..n]);
+        }
+        assert_eq!(read, b"hi\r\n");
     }
 }
