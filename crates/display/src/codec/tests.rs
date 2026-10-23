@@ -206,6 +206,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
         any::<u32>().prop_map(|surface| ServerMessage::Bell {
             surface: SurfaceId::new(surface)
         }),
+        any::<u64>().prop_map(|seq| ServerMessage::InputAck { seq: Seq::new(seq) }),
     ]
 }
 
@@ -286,8 +287,14 @@ fn client_message() -> impl Strategy<Value = ClientMessage> {
             size,
             cell
         }),
-        (surface.clone(), input())
-            .prop_map(|(surface, input)| ClientMessage::Input { surface, input }),
+        (
+            any::<u64>(),
+            proptest::collection::vec((any::<u32>().prop_map(SurfaceId::new), input()), 0..4)
+        )
+            .prop_map(|(first, inputs)| ClientMessage::Input {
+                first: Seq::new(first),
+                inputs,
+            }),
         (surface.clone(), any::<u64>()).prop_map(|(surface, seq)| ClientMessage::Ack {
             surface,
             seq: Seq::new(seq)
@@ -296,7 +303,9 @@ fn client_message() -> impl Strategy<Value = ClientMessage> {
         any::<[u8; 32]>().prop_map(|hash| ClientMessage::Want {
             id: ResourceId::from_hash(hash)
         }),
-        Just(ClientMessage::Hello),
+        any::<u64>().prop_map(|first| ClientMessage::Hello {
+            first: Seq::new(first)
+        }),
         Just(ClientMessage::Bye),
     ]
 }

@@ -17,7 +17,8 @@
 //!   Emacs ◀─tty─── Pty ◀── keys::encode ◀──────Input─────────────── client
 //! ```
 //!
-//! Pure parts: [`apc`], [`kitty`], [`terminal`], [`keys`], [`follow`].
+//! Pure parts: [`apc`], [`kitty`], [`terminal`], [`keys`], [`follow`],
+//! [`order`].
 //! Effects: [`pty`] (the system's terminals), [`surface`] (a reader
 //! thread per surface), [`hub`] (what Emacs and sessions share),
 //! [`session`], and its transports: [`server`] (WebSockets) and
@@ -32,6 +33,7 @@ pub mod follow;
 pub mod hub;
 pub mod keys;
 pub mod kitty;
+pub mod order;
 pub mod pool;
 pub mod pty;
 pub mod server;

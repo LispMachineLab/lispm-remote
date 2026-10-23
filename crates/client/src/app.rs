@@ -144,6 +144,7 @@ impl DisplayView {
     pub fn new(root: &HtmlElement, send: js_sys::Function) -> Result<Self, JsValue> {
         let app = Rc::new(RefCell::new(App::new(root, send)?));
         listen(&app)?;
+        resend_input(&app)?;
         Ok(Self { app })
     }
 
@@ -155,7 +156,8 @@ impl DisplayView {
             state.model.reset();
             state.sought.clear();
             state.set_status("");
-            state.send(&ClientMessage::Hello);
+            let hello = state.model.hello();
+            state.send(&hello);
         }
         self.app.borrow().render_tabs();
         schedule_draw(&self.app);
@@ -297,9 +299,17 @@ impl App {
         }
     }
 
-    fn input(&self, input: Input) {
+    fn input(&mut self, input: Input) {
         if let Some(surface) = self.model.active {
-            self.send(&ClientMessage::Input { surface, input });
+            self.model.input(surface, input);
+            self.flush();
+        }
+    }
+
+    /// Sends the input LispM has not acknowledged, when it is time to.
+    fn flush(&mut self) {
+        if let Some(message) = self.model.flush(now()) {
+            self.send(&message);
         }
     }
 
@@ -454,7 +464,7 @@ impl App {
         )
     }
 
-    fn pointer(&self, kind: PointerKind, button: Button, x: f64, y: f64, mods: Mods) {
+    fn pointer(&mut self, kind: PointerKind, button: Button, x: f64, y: f64, mods: Mods) {
         let (col, row) = self.cell_at(x, y);
         self.input(Input::Pointer(Pointer {
             kind,
@@ -609,6 +619,27 @@ fn effects(app: &Shared, effects: Vec<Effect>) {
     }
 }
 
+/// The time in milliseconds.
+fn now() -> u64 {
+    // Saturating: the clock is non-negative and far below u64::MAX.
+    #[allow(clippy::as_conversions)]
+    let now = js_sys::Date::now().max(0.0) as u64;
+    now
+}
+
+/// Sends, every so often, the input gathered or not acknowledged.
+fn resend_input(app: &Shared) -> Result<(), JsValue> {
+    let resending = Rc::clone(app);
+    let tick = Closure::<dyn FnMut()>::new(move || resending.borrow_mut().flush());
+    let window = app.borrow().window.clone();
+    window.set_interval_with_callback_and_timeout_and_arguments_0(
+        tick.as_ref().unchecked_ref(),
+        40,
+    )?;
+    tick.forget();
+    Ok(())
+}
+
 /// Adds `handler` for `event` on `target`, for the page's life.
 fn on<E: JsCast + 'static>(
     target: &web_sys::EventTarget,
@@ -704,7 +735,7 @@ fn listen(app: &Shared) -> Result<(), JsValue> {
 /// Sends text a person typed (an input method's commit, a phone's
 /// keyboard) as the keys that type it, so Emacs inserts it as typing;
 /// only a paste travels as text, which Emacs takes as a paste.
-fn typed_text(state: &App, text: &str) {
+fn typed_text(state: &mut App, text: &str) {
     for c in text.chars() {
         state.input(Input::Key(Key {
             code: KeyCode::Char(c),
@@ -748,7 +779,7 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
         };
         if let Some(input) = keymap::key_input(fields) {
             event.prevent_default();
-            pressed.borrow().input(input);
+            pressed.borrow_mut().input(input);
         }
     })?;
     let composing = Rc::clone(app);
@@ -767,14 +798,14 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
             let mut state = composed.borrow_mut();
             state.composing = false;
             if let Some(text) = event.data() {
-                typed_text(&state, &text);
+                typed_text(&mut state, &text);
             }
             state.keys.set_value("");
         },
     )?;
     let typed = Rc::clone(app);
     on(keys, "input", move |event: web_sys::InputEvent| {
-        let state = typed.borrow();
+        let mut state = typed.borrow_mut();
         if state.composing || event.is_composing() {
             return;
         }
@@ -787,7 +818,7 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
         let input = match event.input_type().as_str() {
             "insertText" => {
                 if let Some(text) = event.data() {
-                    typed_text(&state, &text);
+                    typed_text(&mut state, &text);
                 }
                 None
             }
@@ -807,7 +838,7 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
             .and_then(|data| data.get_data("text/plain").ok())
         {
             event.prevent_default();
-            pasted.borrow().input(Input::Text(text));
+            pasted.borrow_mut().input(Input::Text(text));
         }
     })?;
     for (event, focused) in [("focus", true), ("blur", false)] {
@@ -816,12 +847,7 @@ fn listen_keys(app: &Shared, keys: &HtmlTextAreaElement) -> Result<(), JsValue> 
             // Focus moves while a handler may hold the state; act after it.
             let app = Rc::clone(&app);
             wasm_bindgen_futures::spawn_local(async move {
-                if let Some(surface) = app.borrow().model.active {
-                    app.borrow().send(&ClientMessage::Input {
-                        surface,
-                        input: Input::Focus(focused),
-                    });
-                }
+                app.borrow_mut().input(Input::Focus(focused));
                 schedule_draw(&app);
             });
         })?;

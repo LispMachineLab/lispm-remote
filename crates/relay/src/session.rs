@@ -19,8 +19,10 @@ use std::io::Write;
 use std::time::Instant;
 
 use lispm_remote_display::ClientMessage;
+use lispm_remote_display::Input;
 use lispm_remote_display::RESOURCE_CHUNK;
 use lispm_remote_display::ResourceId;
+use lispm_remote_display::Seq;
 use lispm_remote_display::ServerMessage;
 use lispm_remote_display::SurfaceId;
 use tungstenite::Message;
@@ -29,6 +31,7 @@ use tungstenite::WebSocket;
 use crate::follow::Follower;
 use crate::hub::Hub;
 use crate::hub::Request;
+use crate::order::Order;
 
 /// Why a session ended.
 #[derive(Debug, thiserror::Error)]
@@ -87,12 +90,25 @@ impl<S: Read + Write> Transport for Socket<S> {
     }
 }
 
+/// Gives each of `inputs`, taken in order, to the surface it was made on;
+/// a surface since closed takes nothing.
+fn hand_over(hub: &Hub, inputs: Vec<(SurfaceId, Input)>) {
+    for (surface, input) in inputs {
+        if let Some(surface) = hub.surface(surface) {
+            let _ = surface.input(&input);
+        }
+    }
+}
+
 /// What a session knows of its client.
 struct Session {
     followers: BTreeMap<SurfaceId, Follower>,
     changes: u64,
     notices: u64,
     started: Instant,
+    inputs: Order<(SurfaceId, Input)>,
+    /// The last input acknowledged to the client.
+    acknowledged: u64,
 }
 
 /// Serves the client on `transport` until it leaves.
@@ -108,6 +124,8 @@ pub fn serve(hub: &Hub, transport: &mut impl Transport) -> Result<(), SessionErr
         changes: 0,
         notices: hub.notices.since(u64::MAX).0,
         started: Instant::now(),
+        inputs: Order::default(),
+        acknowledged: 0,
     };
     let result = match session.run(hub, transport) {
         Err(SessionError::Closed) => Ok(()),
@@ -118,6 +136,32 @@ pub fn serve(hub: &Hub, transport: &mut impl Transport) -> Result<(), SessionErr
 }
 
 impl Session {
+    /// Milliseconds since the session started.
+    fn now(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Hands over input whose gap waited too long, and acknowledges what
+    /// was taken since the client was last told.
+    fn take_input(
+        &mut self,
+        hub: &Hub,
+        transport: &mut impl Transport,
+    ) -> Result<(), SessionError> {
+        hand_over(hub, self.inputs.release(self.now()));
+        let acknowledged = self.inputs.acknowledged();
+        if acknowledged != self.acknowledged {
+            self.acknowledged = acknowledged;
+            send(
+                transport,
+                &ServerMessage::InputAck {
+                    seq: Seq::new(acknowledged),
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn run(&mut self, hub: &Hub, transport: &mut impl Transport) -> Result<(), SessionError> {
         loop {
             if let Some(bytes) = transport.receive()? {
@@ -125,6 +169,7 @@ impl Session {
                     self.receive(hub, transport, message)?;
                 }
             }
+            self.take_input(hub, transport)?;
             self.catch_up(hub, transport)?;
         }
     }
@@ -150,9 +195,10 @@ impl Session {
                     let _ = surface.resize(size, cell);
                 }
             }
-            ClientMessage::Input { surface, input } => {
-                if let Some(surface) = hub.surface(surface) {
-                    let _ = surface.input(&input);
+            ClientMessage::Input { first, inputs } => {
+                let now = self.now();
+                for (seq, input) in (first.get()..).zip(inputs) {
+                    hand_over(hub, self.inputs.take(seq, input, now));
                 }
             }
             ClientMessage::Ack { surface, seq } => {
@@ -166,7 +212,9 @@ impl Session {
                 }
             }
             ClientMessage::Want { id } => send_resource(hub, transport, id)?,
-            ClientMessage::Hello => {}
+            ClientMessage::Hello { first } => {
+                hand_over(hub, self.inputs.start(first.get(), self.now()));
+            }
             ClientMessage::Bye => return Err(SessionError::Closed),
         }
         Ok(())
@@ -185,11 +233,11 @@ impl Session {
         for notice in &notices {
             send(transport, notice)?;
         }
+        let now = self.now();
         for surface in hub.all_surfaces() {
             let Some(follower) = self.followers.get_mut(&surface.id()) else {
                 continue;
             };
-            let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
             if follower.due(now, surface.version()) {
                 let (version, screen) = surface.snapshot();
                 for frame in follower.frames(now, version, &screen) {

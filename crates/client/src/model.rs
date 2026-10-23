@@ -5,6 +5,8 @@
 
 //! The client's state and how each message from LispM changes it, as a
 //! pure function: the page performs the effects (sends, redraws, images).
+//! Input is numbered and kept until LispM acknowledges it, and the page
+//! sends again what waited too long, since a channel may lose it.
 //!
 //! ```text
 //!   receive : Model × ServerMessage → Model × [Effect]
@@ -15,9 +17,11 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 use lispm_remote_display::CellPixels;
 use lispm_remote_display::ClientMessage;
+use lispm_remote_display::Input;
 use lispm_remote_display::Received;
 use lispm_remote_display::Replica;
 use lispm_remote_display::ResourceId;
@@ -31,6 +35,50 @@ use lispm_remote_display::Window;
 
 /// The longest resource assembled.
 const MAX_RESOURCE: usize = 16 * 1024 * 1024;
+/// How long, in milliseconds, input waits for LispM's acknowledgement
+/// before it is sent again.
+pub const INPUT_RESEND_MS: u64 = 300;
+/// How long, in milliseconds, input is gathered before it is sent, so a
+/// burst of keys travels in few messages.
+pub const INPUT_GATHER_MS: u64 = 30;
+/// The most unacknowledged inputs kept.
+const MAX_PENDING: usize = 512;
+
+/// The input LispM has not acknowledged, oldest first.
+///
+/// Invariant: `pending[i]` is input number `first + i`, and
+/// `first + pending.len()` is the next number.
+#[derive(Debug)]
+struct Inputs {
+    first: u64,
+    pending: VecDeque<(SurfaceId, Input)>,
+    unsent: bool,
+    sent_at: Option<u64>,
+}
+
+impl Default for Inputs {
+    fn default() -> Self {
+        Self::from(1)
+    }
+}
+
+impl Inputs {
+    /// No input yet, the next numbered `first`.
+    fn from(first: u64) -> Self {
+        Self {
+            first,
+            pending: VecDeque::new(),
+            unsent: false,
+            sent_at: None,
+        }
+    }
+
+    /// The next input's number.
+    fn next(&self) -> u64 {
+        let pending = u64::try_from(self.pending.len()).unwrap_or(u64::MAX);
+        self.first.saturating_add(pending)
+    }
+}
 
 /// The client's copy of one surface.
 #[derive(Debug)]
@@ -93,15 +141,27 @@ pub struct Model {
     pub active: Option<SurfaceId>,
     asked: Vec<String>,
     assemblies: HashMap<ResourceId, Assembly>,
+    inputs: Inputs,
 }
 
 impl Model {
-    /// Forgets everything, as when the connection is lost.
+    /// Forgets everything, as when the connection is lost; input not
+    /// acknowledged is dropped, not sent again to a new session, and
+    /// input from now on is numbered past it.
     pub fn reset(&mut self) {
         *self = Self {
             asked: std::mem::take(&mut self.asked),
+            inputs: Inputs::from(self.inputs.next()),
             ..Self::default()
         };
+    }
+
+    /// The message that starts a session: input is numbered from here.
+    #[must_use]
+    pub fn hello(&self) -> ClientMessage {
+        ClientMessage::Hello {
+            first: Seq::new(self.inputs.next()),
+        }
     }
 
     /// The message that opens `window` at `size`, remembering that this
@@ -113,6 +173,42 @@ impl Model {
             size,
             cell,
         }
+    }
+
+    /// Takes `input`, made on `surface`, to send with the input LispM
+    /// has not acknowledged yet (see [`Model::flush`]).
+    pub fn input(&mut self, surface: SurfaceId, input: Input) {
+        let inputs = &mut self.inputs;
+        inputs.pending.push_back((surface, input));
+        inputs.unsent = true;
+        while inputs.pending.len() > MAX_PENDING {
+            inputs.pending.pop_front();
+            inputs.first += 1;
+        }
+    }
+
+    /// The message to send at `now` (milliseconds), if any: all the input
+    /// LispM has not acknowledged, once new input gathered for
+    /// [`INPUT_GATHER_MS`] or nothing was acknowledged for
+    /// [`INPUT_RESEND_MS`].
+    pub fn flush(&mut self, now: u64) -> Option<ClientMessage> {
+        let inputs = &mut self.inputs;
+        if inputs.pending.is_empty() {
+            return None;
+        }
+        let since = inputs
+            .sent_at
+            .map_or(u64::MAX, |sent| now.saturating_sub(sent));
+        let due = (inputs.unsent && since >= INPUT_GATHER_MS) || since >= INPUT_RESEND_MS;
+        if !due {
+            return None;
+        }
+        inputs.sent_at = Some(now);
+        inputs.unsent = false;
+        Some(ClientMessage::Input {
+            first: Seq::new(inputs.first),
+            inputs: inputs.pending.iter().cloned().collect(),
+        })
     }
 
     /// The surface shown, if any.
@@ -154,6 +250,13 @@ impl Model {
             }
             ServerMessage::Clipboard(text) => vec![Effect::Clipboard(text)],
             ServerMessage::Bell { surface } => vec![Effect::Bell(surface)],
+            ServerMessage::InputAck { seq } => {
+                let inputs = &mut self.inputs;
+                while inputs.first <= seq.get() && inputs.pending.pop_front().is_some() {
+                    inputs.first += 1;
+                }
+                Vec::new()
+            }
         }
     }
 
@@ -378,6 +481,59 @@ mod tests {
         );
         model.receive(chunk(0, &bytes[..6]));
         assert_eq!(model.receive(chunk(6, b"XXXX")), vec![Effect::Missing(id)]);
+    }
+
+    #[test]
+    fn input_travels_gathered_and_again_until_acknowledged() {
+        let mut model = Model::default();
+        let surface = SurfaceId::new(1);
+        let batch = |first: u64, inputs: &[bool]| {
+            Some(ClientMessage::Input {
+                first: Seq::new(first),
+                inputs: inputs
+                    .iter()
+                    .map(|&focus| (surface, Input::Focus(focus)))
+                    .collect(),
+            })
+        };
+        model.input(surface, Input::Focus(true));
+        assert_eq!(model.flush(0), batch(1, &[true]), "the first goes at once");
+        model.input(surface, Input::Focus(false));
+        assert_eq!(model.flush(INPUT_GATHER_MS - 1), None, "gathering");
+        assert_eq!(
+            model.flush(INPUT_GATHER_MS),
+            batch(1, &[true, false]),
+            "all unacknowledged"
+        );
+        model.receive(ServerMessage::InputAck { seq: Seq::new(1) });
+        assert_eq!(model.flush(INPUT_GATHER_MS + 1), None, "nothing new");
+        assert_eq!(
+            model.flush(INPUT_GATHER_MS + INPUT_RESEND_MS),
+            batch(2, &[false]),
+            "again"
+        );
+        model.receive(ServerMessage::InputAck { seq: Seq::new(2) });
+        assert_eq!(model.flush(10 * INPUT_RESEND_MS), None);
+    }
+
+    #[test]
+    fn a_new_session_numbers_input_past_the_last_ones() {
+        let mut model = Model::default();
+        let surface = SurfaceId::new(1);
+        assert_eq!(model.hello(), ClientMessage::Hello { first: Seq::new(1) });
+        model.input(surface, Input::Focus(true));
+        model.input(surface, Input::Focus(false));
+        model.reset();
+        assert_eq!(model.hello(), ClientMessage::Hello { first: Seq::new(3) });
+        assert_eq!(model.flush(0), None, "the old input is not sent again");
+        model.input(surface, Input::Focus(true));
+        assert_eq!(
+            model.flush(0),
+            Some(ClientMessage::Input {
+                first: Seq::new(3),
+                inputs: vec![(surface, Input::Focus(true))],
+            })
+        );
     }
 
     #[test]

@@ -7,14 +7,16 @@
 //!
 //! ```text
 //!   client                                  LispM
-//!     → Hello                                 start showing LispM's windows
+//!     → Hello n                               start showing LispM's windows;
+//!                                             input is numbered from n
 //!     ← Windows [w…]                          what can be opened
 //!     → Open w size cell
 //!     ← Opened s w size
 //!     ← Frame s base=0 seq=1 update           a whole screen
 //!     → Ack s 1
 //!     ← Frame s base=1 seq=2 update           a difference
-//!     → Input s i                             keys, text, pointer
+//!     → Input n [(s, i)…]                     keys, text, pointer; all unacknowledged
+//!     ← InputAck n                            taken in order up to n
 //!     → Want r                                an image it lacks
 //!     ← Resource r total offset bytes …       its bytes, in chunks
 //!     → Resync s                              its copy is lost: base=0 again
@@ -162,6 +164,12 @@ pub enum ServerMessage {
         /// The surface.
         surface: SurfaceId,
     },
+    /// LispM took the client's input up to `seq`, in order: the client
+    /// stops resending it.
+    InputAck {
+        /// The last input taken.
+        seq: Seq,
+    },
 }
 
 /// What a client tells LispM.
@@ -192,12 +200,16 @@ pub enum ClientMessage {
         /// A cell's size.
         cell: CellPixels,
     },
-    /// A person did something on the surface.
+    /// What a person did, each on a surface.  Inputs are numbered on
+    /// from the number the session's `Hello` gave (1 without one),
+    /// `inputs[i]` being number `first + i`, and a client sends all it
+    /// has not seen acknowledged in each message, so LispM takes them
+    /// once and in order over a channel that loses and reorders.
     Input {
-        /// The surface.
-        surface: SurfaceId,
-        /// What they did.
-        input: Input,
+        /// The number of the first input.
+        first: Seq,
+        /// The inputs, and the surface each was made on.
+        inputs: Vec<(SurfaceId, Input)>,
     },
     /// The client's copy of the surface is at `seq`.
     Ack {
@@ -216,8 +228,13 @@ pub enum ClientMessage {
         /// The resource.
         id: ResourceId,
     },
-    /// The client starts showing LispM's windows.
-    Hello,
+    /// The client starts showing LispM's windows.  Its input in this
+    /// session is numbered from `first`, past any it sent before, so
+    /// input of an earlier session that arrives late is never taken.
+    Hello {
+        /// The number of its next input.
+        first: Seq,
+    },
     /// The client stops showing them: send it nothing more.
     Bye,
 }

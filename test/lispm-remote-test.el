@@ -814,8 +814,8 @@ made a tty frame for it, and only after the phone asked."
         (progn
           (lispm-remote-test--pair phone)
           (should-not lispm-remote-display--channels)
-          ;; Hello: version 1, tag 8.
-          (lispm-remote-test--display-send phone (unibyte-string 1 8))
+          ;; Hello: version 1, tag 8, input numbered from 1.
+          (lispm-remote-test--display-send phone (unibyte-string 1 8 1))
           (lispm-remote-node-test--wait
            (lambda () (lispm-remote-test--display-received phone 1)) "the windows")
           ;; Open "notes" at 40x10, cells 8x16: version 1, tag 1.
