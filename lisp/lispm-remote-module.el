@@ -96,7 +96,7 @@ when the module is not made for it."
                               (cons (expand-file-name "Cargo.toml" directory)
                                     (directory-files-recursively
                                      (expand-file-name "src" directory) "\\.rs\\'")))))
-                     '("crates/module" "crates/protocol"))))))
+                     '("crates/display" "crates/module" "crates/protocol" "crates/relay"))))))
 
 (defun lispm-remote-module--stale-p (module)
   "Return non-nil when a source is newer than the built MODULE."

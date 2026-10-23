@@ -2,7 +2,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/module", "crates/protocol", "crates/web"]
+members = ["crates/client", "crates/display", "crates/module", "crates/protocol", "crates/relay", "crates/web"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,7 @@ base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 blake2 = { version = "0.10", default-features = false }
 chacha20 = { version = "0.9", default-features = false, features = ["zeroize"] }
 proptest = "1"
+sha2 = { version = "0.10", default-features = false }
 # Rings Network, at a release tag; its crates come from one repository.
 rings-core = { git = "https://github.com/RingsNetwork/rings", tag = "v0.34.2", default-features = false, features = ["default"] }
 rings-node = { git = "https://github.com/RingsNetwork/rings", tag = "v0.34.2", default-features = false, features = ["node"] }

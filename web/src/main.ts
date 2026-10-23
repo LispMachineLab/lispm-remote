@@ -16,6 +16,7 @@
  */
 
 import { chatting, showAgents } from "./chat.js";
+import { closeWindows, openWindows, showingWindows } from "./windows.js";
 import { button, byId, h, rebuild } from "./dom.js";
 import { messageOf, type Options, Remote } from "./remote.js";
 import { scan, takeToken } from "./scan.js";
@@ -70,6 +71,7 @@ const statusLine = byId<HTMLParagraphElement>("status");
 const noticeLine = byId<HTMLParagraphElement>("notice");
 const pairSection = byId<HTMLElement>("pair");
 const footer = byId<HTMLElement>("about");
+const windowsButton = byId<HTMLButtonElement>("open-windows");
 
 let remote: Remote | null = null;
 let scanning: AbortController | null = null;
@@ -206,7 +208,17 @@ function draw(current: Remote): void {
   renderPair(current);
   showAgents(current, render);
   renderAbout(current);
+  windowsButton.hidden = !current.pairing || showingWindows();
 }
+
+windowsButton.addEventListener("click", () => {
+  if (remote) {
+    void openWindows(remote, () => {
+      closeWindows();
+      render();
+    }).then(render);
+  }
+});
 
 let drawing = false;
 let stale = false;

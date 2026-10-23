@@ -258,6 +258,8 @@ export class Remote {
   private watching = false;
   private token: string | null = null;
   private readonly commands = new Map<string, Command>();
+  private readonly displayListeners: ((payload: Uint8Array) => void)[] = [];
+  private readonly channelListeners: ((open: boolean) => void)[] = [];
 
   private constructor(
     private readonly store: Store,
@@ -679,6 +681,7 @@ export class Remote {
           this.askedAt = 0;
           this.probeSince = 0;
           this.lastHeard = Date.now();
+          this.tellChannel(true);
           break;
         case "delivered":
           this.heard(effect.payload);
@@ -686,6 +689,7 @@ export class Remote {
         case "closed":
           this.phase = "idle";
           this.asking = false;
+          this.tellChannel(false);
           break;
         case "failed":
           if (this.phase === "pairing") {
@@ -706,7 +710,49 @@ export class Remote {
     this.changed();
   }
 
+  /** Sends `payload`, a message of LispM's display protocol (its first
+   * byte is 1), on the channel, if one is open. */
+  sendDisplay(payload: Uint8Array): void {
+    if (!this.machine.openP()) {
+      return;
+    }
+    try {
+      this.apply(this.machine.send(payload));
+    } catch (error) {
+      this.notice = { tone: "error", text: messageOf(error) };
+    }
+  }
+
+  /** Calls `listener` with each display message LispM sends. */
+  onDisplay(listener: (payload: Uint8Array) => void): void {
+    this.displayListeners.push(listener);
+  }
+
+  /** Calls `listener` with `true` when a channel to LispM opens, and
+   * `false` when it closes. */
+  onChannel(listener: (open: boolean) => void): void {
+    this.channelListeners.push(listener);
+  }
+
+  /** Tells the channel's listeners, after the effects at hand are done. */
+  private tellChannel(open: boolean): void {
+    queueMicrotask(() => {
+      for (const listener of this.channelListeners) {
+        listener(open);
+      }
+    });
+  }
+
   private heard(payload: Uint8Array): void {
+    // A display message (first byte 1) goes to the display; `{` is JSON.
+    if (payload[0] === 1) {
+      this.lastHeard = Date.now();
+      this.probeSince = 0;
+      for (const listener of this.displayListeners) {
+        listener(payload);
+      }
+      return;
+    }
     let message: {
       type?: unknown;
       state?: LispmState;
