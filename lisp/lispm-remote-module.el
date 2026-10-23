@@ -70,7 +70,8 @@ when the module is not made for it."
   (let ((configuration (or configuration system-configuration)))
     (cond ((string-match-p "\\`\\(?:aarch64\\|arm64\\)-apple-darwin" configuration) "aarch64-apple-darwin")
           ((string-match-p "\\`x86_64-apple-darwin" configuration) "x86_64-apple-darwin")
-          ((string-match-p "\\`x86_64-[^-]+-linux-gnu\\'" configuration) "x86_64-unknown-linux-gnu"))))
+          ((string-match-p "\\`x86_64-[^-]+-linux-gnu\\'" configuration) "x86_64-unknown-linux-gnu")
+          ((string-match-p "\\`aarch64-[^-]+-linux-gnu\\'" configuration) "aarch64-unknown-linux-gnu"))))
 
 (defun lispm-remote-module--suffix (target)
   "Return the file name suffix of a module for TARGET."

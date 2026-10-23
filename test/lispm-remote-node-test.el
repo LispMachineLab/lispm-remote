@@ -167,6 +167,7 @@ as the page does."
 (ert-deftest lispm-remote-node-test-targets ()
   (should (equal (lispm-remote-module--target "aarch64-apple-darwin24.1.0") "aarch64-apple-darwin"))
   (should (equal (lispm-remote-module--target "x86_64-pc-linux-gnu") "x86_64-unknown-linux-gnu"))
+  (should (equal (lispm-remote-module--target "aarch64-unknown-linux-gnu") "aarch64-unknown-linux-gnu"))
   (should-not (lispm-remote-module--target "riscv64-unknown-linux-gnu")))
 
 (provide 'lispm-remote-node-test)
