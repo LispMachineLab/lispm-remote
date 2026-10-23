@@ -1,0 +1,11 @@
+{
+  "name": "lispm-remote-e2e",
+  "version": "0.1.0",
+  "description": "The browser test of LispM Remote's page",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "playwright": "1.61.1"
+  }
+}
