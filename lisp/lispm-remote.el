@@ -374,7 +374,7 @@ changed; with REJOIN, join the network again when there are none."
                                  (when error (lispm-remote--log "sending to %s failed: %s" to error)))))
       (`(show-offer ,token)
        (when-let* ((image (plist-get lispm-remote--offer :image)))
-         (image-flush image))
+         (lispm-remote--flush image))
        (setq lispm-remote--offer
              (list :token token :shown (float-time)
                    :expires (+ (float-time) lispm-remote-offer-seconds)))
@@ -889,6 +889,11 @@ its state, `done', `active', `pending' or `failed'."
   "Return non-nil when the screen is drawn with SVG images."
   (and (display-graphic-p) (image-type-available-p 'svg)))
 
+(defun lispm-remote--flush (image)
+  "Free IMAGE's cached pixels, in an Emacs built with images."
+  (when (fboundp 'image-flush)
+    (image-flush image)))
+
 (defun lispm-remote--insert-image (image text)
   "Insert IMAGE, showing TEXT in its place where images are not shown."
   (push image lispm-remote--images)
@@ -1178,7 +1183,7 @@ STYLE is t for the main button, `danger' for a refusal, nil otherwise."
         (setq lispm-remote--images nil)
         (erase-buffer)
         (lispm-remote--insert-screen offer)
-        (mapc #'image-flush replaced)
+        (mapc #'lispm-remote--flush replaced)
         (goto-char (point-min)))
       (lispm-remote--keep-ticking offer))
     buffer))
