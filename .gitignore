@@ -2,3 +2,4 @@
 /web/dist
 /web/node_modules
 /web/pkg
+/test/e2e/node_modules
