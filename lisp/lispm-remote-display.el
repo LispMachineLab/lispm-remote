@@ -142,7 +142,7 @@ It is called with the new frame and the window's NAME.")
 
 (defun lispm-remote-display-web-directory ()
   "Return the directory the client page is served from."
-  (expand-file-name "web" lispm-remote-module-root))
+  (expand-file-name "crates/client/page" lispm-remote-module-root))
 
 (defun lispm-remote-display-url ()
   "Return the URL of the display's page, token included."

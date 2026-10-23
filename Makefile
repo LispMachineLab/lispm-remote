@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 #   make              build the module for this computer
-#   make web          build the display's page: the client in WebAssembly
+#   make display-page build the display's page: the client in WebAssembly
 #   make test         the Rust tests, then the Lisp tests on the built module
 #   make compile      byte-compile the Emacs Lisp, warnings failing it
 
@@ -11,7 +11,7 @@ CARGO ?= cargo
 TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 EMACS_BATCH = $(EMACS) -Q --batch -L lisp
 
-.PHONY: all module web test test-rust test-lisp compile clean
+.PHONY: all module display-page test test-rust test-lisp compile clean
 
 all: module
 
@@ -23,9 +23,9 @@ module:
 WASM_BINDGEN ?= wasm-bindgen
 WASM = target/wasm32-unknown-unknown/release/lispm_remote_client.wasm
 
-web:
+display-page:
 	$(CARGO) build --release --target wasm32-unknown-unknown -p lispm-remote-client
-	$(WASM_BINDGEN) --target web --no-typescript --out-dir web/pkg $(WASM)
+	$(WASM_BINDGEN) --target web --no-typescript --out-dir crates/client/page/pkg $(WASM)
 
 test: test-rust test-lisp
 

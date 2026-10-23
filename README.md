@@ -32,8 +32,7 @@ its input. That is what lets the tests cover every order of a pairing's events.
 | `crates/module`               | The Emacs module: a Rings node on its own threads inside Emacs     |
 | `crates/display`              | The display protocol: screens, their differences, the codec        |
 | `crates/relay`                | Emacs tty frames as display surfaces, and the clients' sessions    |
-| `crates/client`               | The display's client, a canvas in WebAssembly                      |
-| `web`                         | The page the client runs in                                        |
+| `crates/client`               | The display's client, a canvas in WebAssembly, and its page        |
 | `lisp/lispm-remote-module.el` | Gets the module and loads it                                       |
 | `lisp/lispm-remote-node.el`   | The node in Lisp: start, connect, send, requests, incoming frames  |
 | `lisp/lispm-remote.el`        | LispM Remote: the QR code, approval, devices, state, reconnecting  |
@@ -117,8 +116,9 @@ the mouse, keys such as `C-;`, bracketed paste, the clipboard.
   by default); `lispm-remote-display-show-function` shows an opened one in its frame.
 
 For now pages connect over a WebSocket on the local network, with the token in the URL; the display
-refuses a page without it, and pages from other sites. Rings, with the pairing above, is next. A page
-is built with `make web`, which needs the `wasm-bindgen` command of the version `crates/client` pins.
+refuses a page without it, and pages from other sites. Rings, with the pairing above, is next. The page
+is built with `make display-page`, which needs the `wasm-bindgen` command of the version
+`crates/client` pins.
 
 What a terminal cannot show, the page does not either: text is in cells, not proportional fonts; images
 inside buffers and WebKit views are not drawn yet.
@@ -126,10 +126,10 @@ inside buffers and WebKit views are not drawn yet.
 ## Build and test
 
 ```sh
-make module      # the module, for this computer
-make web         # the display's page: the client in WebAssembly
-make test        # the Rust tests, then the Lisp tests on the built module
-make compile     # byte-compile the Lisp
+make module        # the module, for this computer
+make display-page  # the display's page: the client in WebAssembly
+make test          # the Rust tests, then the Lisp tests on the built module
+make compile       # byte-compile the Lisp
 cargo check -p lispm-remote-protocol --target wasm32-unknown-unknown
 ```
 
