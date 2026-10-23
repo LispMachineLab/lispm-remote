@@ -44,11 +44,18 @@ its input. That is what lets the tests cover every order of a pairing's events.
 
 ## Pairing a device
 
-`M-x lispm-remote-pair` turns on `lispm-remote-mode` and shows a QR code: a picture in a graphical
-Emacs, half blocks in a terminal. Open lispm.ai/remote on the device and scan it. When the device asks,
-both screens show the same fingerprint. Press `a` to approve it or `r` to refuse it. The code works
-once, for two minutes. `M-x lispm-remote-devices` lists the paired devices; press `d` there to forget
-one.
+`M-x lispm-remote-pair` turns on `lispm-remote-mode` and shows the pairing screen. It walks through
+the same steps as the device's page, **Join, Scan, Reach, Confirm, Connected**, so you can follow
+one pairing on either screen.
+
+- **Scan.** The screen shows a QR code, with a bar counting down the two minutes it works. Open
+  lispm.ai/remote on the device and scan the code.
+- **Confirm.** When the device asks, both screens show the same fingerprint. Approve it with `a`,
+  refuse it with `r`, or click either button.
+- **Connected.** The screen shows the device's session opening.
+
+A graphical Emacs draws the screen with SVG, and a terminal shows the same in characters.
+`M-x lispm-remote-devices` lists the paired devices; press `d` there to forget one.
 
 While the mode is on, the node joins Rings through `lispm-remote-seeds` (by default
 `node.rings.rs`). It joins again whenever it has lost every peer. When a paired device opens a session,
