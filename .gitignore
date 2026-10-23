@@ -1,2 +1,5 @@
 /target
 /crates/client/page/pkg
+/web/dist
+/web/node_modules
+/web/pkg
