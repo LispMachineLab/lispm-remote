@@ -7,7 +7,8 @@
 //! then opens one channel at a time:
 //!
 //! ```text
-//!   Phase  = Idle | Pairing(offer, hs, until) | Opening(id, hs, until) | Open(id, channel)
+//!   Phase  = Idle | Pairing(offer, hs, wait) | Opening(id, hs, wait) | Open(id, channel)
+//!   wait   = (frame, until, retry_at)
 //!   Init   = Idle, with the stored pairing if any
 //!
 //!   Pair(offer)       Idle ∧ offer unexpired → Pairing, send PairInit, show fingerprint
@@ -17,7 +18,13 @@
 //!   Refuse(r)         Pairing | Opening      → Idle  (NotPaired also forgets the pairing)
 //!   Record            Open                   → delivered, or Idle when closed
 //!   Tick              past `until`           → Idle, timed out
+//!                     past `retry_at`        → send the waiting frame again
 //! ```
+//!
+//! The network may lose a frame between hops and say nothing, so a phase
+//! that waits for an answer sends its frame again every [`RETRY_INTERVAL`]
+//! of ticks; the responder answers a repeated frame with the answer it gave
+//! the first time.
 //!
 //! Every frame must come from the responder the phase talks to; the
 //! transport authenticates the sender, and the handshake binds it.
@@ -52,6 +59,8 @@ use crate::wire::WireError;
 
 /// How long a device waits for its session to open.
 pub const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a device waits for an answer before sending its frame again.
+pub const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The responder a device paired with, as the device stores it.
 ///
@@ -213,12 +222,12 @@ enum Phase {
     Pairing {
         offer: Offer,
         handshake: HandshakeState,
-        until: Millis,
+        wait: Wait,
     },
     Opening {
         channel: ChannelId,
         handshake: HandshakeState,
-        until: Millis,
+        wait: Wait,
     },
     Open {
         id: ChannelId,
@@ -226,11 +235,39 @@ enum Phase {
     },
 }
 
+/// A frame waiting for its answer: until when, and when to send it again.
+struct Wait {
+    to: PeerId,
+    frame: Vec<u8>,
+    until: Millis,
+    retry_at: Millis,
+}
+
+impl Wait {
+    fn new(now: Millis, to: PeerId, frame: Vec<u8>, until: Millis) -> Self {
+        Self {
+            to,
+            frame,
+            until,
+            retry_at: now.after(RETRY_INTERVAL),
+        }
+    }
+
+    /// The frame to send first.
+    fn transmit(&self) -> Effect {
+        // Law: the frame is sent as it is, each time; a copy repeats it.
+        Effect::Transmit {
+            to: self.to.clone(),
+            frame: self.frame.clone(),
+        }
+    }
+}
+
 impl Phase {
-    /// The deadline the phase waits for, if it waits.
-    const fn deadline(&self) -> Option<Millis> {
+    /// What the phase waits for, if it waits.
+    fn wait(&mut self) -> Option<&mut Wait> {
         match self {
-            Self::Pairing { until, .. } | Self::Opening { until, .. } => Some(*until),
+            Self::Pairing { wait, .. } | Self::Opening { wait, .. } => Some(wait),
             Self::Idle | Self::Open { .. } => None,
         }
     }
@@ -322,21 +359,24 @@ impl Initiator {
         let mut handshake = spec.build(entropy).map_err(CommandError::Handshake)?;
         let message = noise::write(&mut handshake, name.as_str().as_bytes())
             .map_err(CommandError::Handshake)?;
+        let wait = Wait::new(
+            now,
+            offer.responder().clone(),
+            Frame::PairInit {
+                channel,
+                noise: message,
+            }
+            .encode(),
+            offer.expires(),
+        );
         let effects = vec![
-            transmit(
-                offer.responder().clone(),
-                &Frame::PairInit {
-                    channel,
-                    noise: message,
-                },
-            ),
+            wait.transmit(),
             Effect::ShowFingerprint(noise::fingerprint(&handshake)),
         ];
-        let until = offer.expires();
         self.phase = Phase::Pairing {
             offer,
             handshake,
-            until,
+            wait,
         };
         Ok(effects)
     }
@@ -361,17 +401,21 @@ impl Initiator {
         };
         let mut handshake = spec.build(entropy).map_err(CommandError::Handshake)?;
         let message = noise::write(&mut handshake, &[]).map_err(CommandError::Handshake)?;
-        let effects = vec![transmit(
+        let wait = Wait::new(
+            now,
             pairing.responder.clone(),
-            &Frame::OpenInit {
+            Frame::OpenInit {
                 channel,
                 noise: message,
-            },
-        )];
+            }
+            .encode(),
+            now.after(OPEN_TIMEOUT),
+        );
+        let effects = vec![wait.transmit()];
         self.phase = Phase::Opening {
             channel,
             handshake,
-            until: now.after(OPEN_TIMEOUT),
+            wait,
         };
         Ok(effects)
     }
@@ -534,13 +578,15 @@ impl Initiator {
     }
 
     fn tick(&mut self, now: Millis) -> Vec<Effect> {
-        if self
-            .phase
-            .deadline()
-            .is_some_and(|until| now.reached(until))
-        {
+        let Some(wait) = self.phase.wait() else {
+            return Vec::new();
+        };
+        if now.reached(wait.until) {
             self.phase = Phase::Idle;
             vec![Effect::Failed(Failure::TimedOut)]
+        } else if now.reached(wait.retry_at) {
+            wait.retry_at = now.after(RETRY_INTERVAL);
+            vec![wait.transmit()]
         } else {
             Vec::new()
         }

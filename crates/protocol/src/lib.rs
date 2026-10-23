@@ -105,6 +105,7 @@ pub mod device {
     pub use crate::initiator::Failure;
     pub use crate::initiator::Input;
     pub use crate::initiator::OPEN_TIMEOUT;
+    pub use crate::initiator::RETRY_INTERVAL;
 }
 
 /// LispM's inputs, effects and errors.

@@ -110,20 +110,35 @@ first time, in a file only you can read."
 
 ;;;; Starting and stopping
 
-(defun lispm-remote-node-start (&optional account frame-function)
+(defun lispm-remote-node-store ()
+  "Return the directory this Emacs's node keeps its replay records in."
+  (let ((directory (expand-file-name "rings" lispm-remote-directory)))
+    (with-file-modes #o700
+      (make-directory directory t))
+    directory))
+
+(defun lispm-remote-node-start (&optional account frame-function store)
   "Start a Rings node and return it.
 ACCOUNT is its Rings account key, by default this Emacs's own; see
 `lispm-remote-node-account'.  FRAME-FUNCTION, when given, is called
-with FROM and FRAME for each frame a peer sends to it."
+with FROM and FRAME for each frame a peer sends to it.
+
+STORE is the directory the node keeps its replay records in.  Rings
+refuses a sender whose message sequences go back, so a node that
+restarts with an account must find them again; this Emacs's own node
+keeps them in `lispm-remote-node-store'.  Without STORE, another
+account's records live in memory, for a node that never restarts."
   (lispm-remote-module-load)
-  (let* ((account (or account (lispm-remote-node-account)))
+  (let* ((store (or store (and (null account) (lispm-remote-node-store))))
+         (account (or account (lispm-remote-node-account)))
          (node (lispm-remote-node--create :frame-function frame-function))
          (process (make-pipe-process
                    :name "lispm-remote-node" :noquery t :coding 'binary
                    :filter (lambda (_process _output) (lispm-remote-node--collect node)))))
     (condition-case error
         (setf (lispm-remote-node-handle node)
-              (lispm-remote-core-start account lispm-remote-ice-servers process))
+              (lispm-remote-core-start account lispm-remote-ice-servers process
+                                       (and store (expand-file-name store))))
       (error (delete-process process)
              (signal (car error) (cdr error))))
     (setf (lispm-remote-node-process node) process

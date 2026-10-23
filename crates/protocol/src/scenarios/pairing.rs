@@ -44,6 +44,41 @@ fn an_approved_claim_pairs_the_device_and_opens_its_channel() {
 }
 
 #[test]
+fn a_lost_pairing_answer_is_sent_again_after_approval() {
+    let mut lispm = Lispm::new(Vec::new());
+    let token = lispm.offer();
+    let mut phone = Phone::new("did:rings:phone", 7, None);
+    let (init, fingerprint) = phone.pair(&token);
+    lispm.receive(&phone.peer, init.clone());
+    let approved = lispm.step(Input::Approve { fingerprint }).unwrap();
+    let channel = single(opened(&approved));
+    let accept = single(frames_to(&approved, &phone.peer));
+
+    // The answer is lost; the offer is used up, yet the phone's frame,
+    // sent again, gets the same answer and no refusal.
+    phone.now = START.after(crate::device::RETRY_INTERVAL);
+    let again = single(transmitted(&phone.step(device::Input::Tick).unwrap()));
+    assert_eq!(again, init);
+    let repeated = lispm.receive(&phone.peer, again);
+    assert!(paired(&repeated).is_empty());
+    assert_eq!(single(frames_to(&repeated, &phone.peer)), accept);
+
+    let effects = phone.receive(&lispm.peer(), accept);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, device::Effect::Paired(_)))
+    );
+    let up = phone.send("hello");
+    assert_eq!(delivered(&lispm.receive(&phone.peer, up)).len(), 1);
+    let down = lispm.send(&phone.peer, channel, "welcome");
+    assert_eq!(
+        phone_delivered(&phone.receive(&lispm.peer(), down)).len(),
+        1
+    );
+}
+
+#[test]
 fn a_claim_without_the_offer_key_is_discarded_and_the_offer_stays() {
     let mut lispm = Lispm::new(Vec::new());
     let token = lispm.offer();

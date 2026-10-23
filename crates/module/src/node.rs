@@ -23,6 +23,7 @@
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -38,7 +39,10 @@ use rings_core::delegation::DelegateeKey;
 use rings_core::delegation::DelegationBuilder;
 use rings_core::dht::Did;
 use rings_core::ecc::SecretKey;
+use rings_core::message::ReplayStorage;
+use rings_core::message::TRANSACTION_REPLAY_STORE_MAX_BYTES;
 use rings_core::storage::MemStorage;
+use rings_core::storage::file::FileStorage;
 use rings_node::native::config::DEFAULT_NETWORK_ID;
 use rings_node::processor::ProcessorBuilder;
 use rings_node::processor::ProcessorConfig;
@@ -56,6 +60,11 @@ pub const MAX_QUEUED: usize = 4096;
 const SHUTDOWN: Duration = Duration::from_secs(2);
 /// The Chord stabilization interval, in seconds.
 const STABILIZE_SECS: u64 = 3;
+
+/// The bytes a replay store may hold: as many as Rings says it must.
+fn replay_store_bytes() -> u32 {
+    u32::try_from(TRANSACTION_REPLAY_STORE_MAX_BYTES).unwrap_or(u32::MAX)
+}
 
 /// Something to call when events start waiting.
 pub trait Wake: Send + Sync + 'static {
@@ -255,12 +264,19 @@ impl Node {
     /// A node for `account`, its ICE servers `ice_servers` (Rings's
     /// `stun://host:port` list), telling `waker` when events wait.
     ///
+    /// `store` is the directory the node keeps its replay records in.
+    /// Rings refuses a sender whose sequences go back, so an account whose
+    /// node restarts must find its records again there; without `store`
+    /// they live in memory, for a node that never restarts.
+    ///
     /// # Errors
     ///
-    /// A [`NodeError`] if the runtime or the Rings processor could not start.
+    /// A [`NodeError`] if the runtime, the store or the Rings processor
+    /// could not start.
     pub fn start(
         account: &Account,
         ice_servers: &str,
+        store: Option<&Path>,
         waker: impl Wake,
     ) -> Result<Self, NodeError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -277,10 +293,18 @@ impl Node {
         );
         let inbox = Arc::new(Inbox::new(waker));
         let shell = Shell::new(Arc::clone(&inbox));
+        let replay_directory = store.map(|directory| directory.join("transaction-replay"));
         let provider = runtime
             .block_on(async move {
+                let replay: ReplayStorage = match replay_directory {
+                    Some(directory) => Box::new(
+                        FileStorage::new_with_cap_and_path(replay_store_bytes(), directory).await?,
+                    ),
+                    None => Box::new(MemStorage::new()),
+                };
                 let processor = ProcessorBuilder::from_config(&config)?
                     .storage(Box::new(MemStorage::new()))
+                    .replay_storage(replay)
                     .build()?;
                 let provider = Arc::new(Provider::from_processor(Arc::new(processor)));
                 provider.register_protocol(Forward, shell)?;
