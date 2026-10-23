@@ -170,6 +170,26 @@ impl fmt::Display for Fingerprint {
     }
 }
 
+/// Law: `s.parse::<Fingerprint>() = Ok(f)` for `s = f.to_string()`; case
+/// is ignored, so a fingerprint typed in lower case reads the same.
+impl core::str::FromStr for Fingerprint {
+    type Err = KeyError;
+
+    fn from_str(text: &str) -> Result<Self, KeyError> {
+        let (high, low) = text.split_once('-').ok_or(KeyError::Fingerprint)?;
+        let half = |part: &str| {
+            if part.len() == 4 && part.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                u16::from_str_radix(part, 16).map_err(|_| KeyError::Fingerprint)
+            } else {
+                Err(KeyError::Fingerprint)
+            }
+        };
+        let [a, b] = half(high)?.to_be_bytes();
+        let [c, d] = half(low)?.to_be_bytes();
+        Ok(Self([a, b, c, d]))
+    }
+}
+
 /// Who one end is: its transport address and its static key pair.
 ///
 /// Invariant: `public` is the public key of `secret`; [`Identity::new`]
@@ -219,6 +239,9 @@ pub enum KeyError {
     /// The build has no X25519.
     #[error("X25519 is not available in this build")]
     Unsupported,
+    /// Text is not a fingerprint: two groups of four hexadecimal digits.
+    #[error("a fingerprint is two groups of four hexadecimal digits, as 4F2A-91C0")]
+    Fingerprint,
 }
 
 #[cfg(test)]
@@ -265,6 +288,20 @@ mod tests {
     fn a_fingerprint_reads_as_two_groups_of_hex() {
         let text = Fingerprint([0x4f, 0x2a, 0x91, 0xc0]).to_string();
         assert_eq!(text, "4F2A-91C0");
+    }
+
+    #[test]
+    fn a_fingerprint_reads_back_from_its_text_in_either_case() {
+        let fingerprint = Fingerprint([0x4f, 0x2a, 0x91, 0xc0]);
+        assert_eq!("4F2A-91C0".parse(), Ok(fingerprint));
+        assert_eq!("4f2a-91c0".parse(), Ok(fingerprint));
+        for bad in ["4F2A91C0", "4F2A-91C", "4F2A-91CG", "+F2A-91C0", ""] {
+            assert_eq!(
+                bad.parse::<Fingerprint>(),
+                Err(KeyError::Fingerprint),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

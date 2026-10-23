@@ -19,6 +19,7 @@
 //!   Refuse | Withdraw  → None, the claimant refused
 //!   Tick               expired offer → None
 //!   OpenInit from p    p ∈ devices ∧ KK verifies      → channel open (oldest evicted past the cap)
+//!   Pair/OpenInit again  the frame that opened (p, id) → its answer again, until p's first record
 //!   Record from p      channel (p, id) opens it        → delivered, or closed
 //!   Forget(p)          devices ← devices ∖ {p}, its channels closed
 //! ```
@@ -92,10 +93,39 @@ struct Paired {
     channels: BTreeMap<ChannelId, Live>,
 }
 
-/// An open channel and when it opened, in opening order.
+/// An open channel, when it opened, in opening order, and the answer
+/// that opened it while the device may still need it again.
 struct Live {
     channel: Channel,
     opened: u64,
+    answer: Option<Answer>,
+}
+
+/// The frame that opened a channel and the frame that answered it.
+///
+/// The network may lose the answer, and then the device sends its frame
+/// again.  A second handshake would give the device keys the channel does
+/// not have, so the first answer is sent again instead.  It is kept until
+/// the device's first record shows it has the keys.
+struct Answer {
+    init: Vec<u8>,
+    frame: Vec<u8>,
+}
+
+impl Answer {
+    /// Whether `message` is the frame this answer answered.
+    fn answers(&self, message: &[u8]) -> bool {
+        self.init == message
+    }
+
+    /// The answer, sent to `to`.
+    fn send_to(&self, to: &PeerId) -> Effect {
+        // Law: an answer is sent as it is, each time; a copy repeats it.
+        Effect::Transmit {
+            to: to.clone(),
+            frame: self.frame.clone(),
+        }
+    }
 }
 
 /// The offer and, once a device proved its key, that device's claim.
@@ -113,6 +143,7 @@ struct Claim {
     name: DeviceName,
     fingerprint: Fingerprint,
     handshake: HandshakeState,
+    message: Vec<u8>,
 }
 
 impl Claim {
@@ -147,6 +178,7 @@ impl Claim {
             name,
             fingerprint: noise::fingerprint(&handshake),
             handshake,
+            message: message.to_vec(),
         }))
     }
 
@@ -341,6 +373,19 @@ impl Responder {
         Ok(effects)
     }
 
+    /// The answer that opened `from`'s `channel`, to send again, if
+    /// `message` is the frame it answered.
+    fn answer_again(&self, from: &PeerId, channel: ChannelId, message: &[u8]) -> Option<Effect> {
+        let answer = self
+            .devices
+            .get(from)?
+            .channels
+            .get(&channel)?
+            .answer
+            .as_ref()?;
+        answer.answers(message).then(|| answer.send_to(from))
+    }
+
     fn claim(
         &mut self,
         now: Millis,
@@ -349,6 +394,10 @@ impl Responder {
         message: &[u8],
         entropy: &Entropy,
     ) -> Vec<Effect> {
+        if let Some(again) = self.answer_again(&from, channel, message) {
+            // Paired already; the device did not get the answer.
+            return vec![again];
+        }
         let Some(pending) = self.pending.take() else {
             return turned_away(from, channel, Refusal::OfferUnavailable, Discard::NoOffer);
         };
@@ -432,6 +481,7 @@ impl Responder {
             key,
             name,
             mut handshake,
+            message,
             ..
         } = *claim;
         let channel = offer.channel();
@@ -445,14 +495,16 @@ impl Responder {
         };
         let record = Device::new(from, key, name, now);
         let peer = record.peer.clone();
+        let answer = Answer {
+            init: message,
+            frame: Frame::PairAccept {
+                channel,
+                noise: accept,
+            }
+            .encode(),
+        };
         let mut effects = vec![
-            transmit(
-                peer.clone(),
-                &Frame::PairAccept {
-                    channel,
-                    noise: accept,
-                },
-            ),
+            answer.send_to(&peer),
             Effect::Paired(record.clone()),
             Effect::OfferEnded(OfferEnd::Used),
         ];
@@ -469,6 +521,7 @@ impl Responder {
             Live {
                 channel: open,
                 opened,
+                answer: Some(answer),
             },
         );
         self.devices.insert(peer.clone(), paired);
@@ -499,10 +552,13 @@ impl Responder {
             return turned_away(from, channel, Refusal::NotPaired, Discard::NotPaired);
         };
         if paired.channels.contains_key(&channel) {
-            return vec![Effect::Discarded {
-                from,
-                why: Discard::Duplicate,
-            }];
+            return match self.answer_again(&from, channel, message) {
+                Some(again) => vec![again],
+                None => vec![Effect::Discarded {
+                    from,
+                    why: Discard::Duplicate,
+                }],
+            };
         }
         let spec = Spec {
             role: Role::Responder,
@@ -531,7 +587,16 @@ impl Responder {
             }
         };
         let opened = self.next_opening();
+        let answer = Answer {
+            init: message.to_vec(),
+            frame: Frame::OpenAccept {
+                channel,
+                noise: accept,
+            }
+            .encode(),
+        };
         let mut effects = Vec::new();
+        let send = answer.send_to(&from);
         if let Some(paired) = self.devices.get_mut(&from) {
             effects.extend(paired.make_room(&from));
             paired.channels.insert(
@@ -539,16 +604,11 @@ impl Responder {
                 Live {
                     channel: open,
                     opened,
+                    answer: Some(answer),
                 },
             );
         }
-        effects.push(transmit(
-            from.clone(),
-            &Frame::OpenAccept {
-                channel,
-                noise: accept,
-            },
-        ));
+        effects.push(send);
         effects.push(Effect::Opened {
             peer: from,
             channel,
@@ -575,7 +635,12 @@ impl Responder {
                 why: Discard::UnknownChannel,
             }];
         };
-        match live.channel.open(nonce, sealed) {
+        let opened = live.channel.open(nonce, sealed);
+        if opened.is_ok() {
+            // The device sealed a record: it has the channel's keys.
+            live.answer = None;
+        }
+        match opened {
             Ok(Body::Data(payload)) => vec![Effect::Delivered {
                 peer: from,
                 channel,

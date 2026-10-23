@@ -11,6 +11,7 @@ use crate::device::CommandError as DeviceError;
 use crate::device::Discard as DeviceDiscard;
 use crate::device::Failure;
 use crate::device::OPEN_TIMEOUT;
+use crate::device::RETRY_INTERVAL;
 use crate::lispm::CloseReason;
 use crate::lispm::Discard;
 use crate::lispm::Effect;
@@ -173,21 +174,76 @@ fn an_open_relayed_under_another_paired_address_fails_its_handshake() {
 }
 
 #[test]
-fn a_duplicated_open_keeps_the_first_channel() {
+fn a_repeated_open_gets_the_first_answer_again() {
     let (mut lispm, mut phone) = restarted();
     let init = phone.connect();
     let first = lispm.receive(&phone.peer, init.clone());
     let channel = single(opened(&first));
-    assert_eq!(
-        discarded(&lispm.receive(&phone.peer, init)),
-        Some(Discard::Duplicate)
-    );
     let accept = single(frames_to(&first, &phone.peer));
-    phone.receive(&lispm.peer(), accept);
+
+    // The answer is lost; at its next tick the phone sends its frame again.
+    phone.now = START.after(RETRY_INTERVAL);
+    let again = single(transmitted(&phone.step(device::Input::Tick).unwrap()));
+    assert_eq!(again, init);
+    let second = lispm.receive(&phone.peer, again);
+    assert!(opened(&second).is_empty());
+    assert_eq!(single(frames_to(&second, &phone.peer)), accept);
+
+    // Both ends hold the keys of one handshake.
+    let effects = phone.receive(&lispm.peer(), accept);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, device::Effect::Opened(id) if *id == channel))
+    );
+    let up = phone.send("ok");
+    assert_eq!(delivered(&lispm.receive(&phone.peer, up)).len(), 1);
     let down = lispm.send(&phone.peer, channel, "still here");
     assert_eq!(
         phone_delivered(&phone.receive(&lispm.peer(), down)).len(),
         1
+    );
+
+    // Its record shows the phone has the keys: the answer is not kept.
+    assert_eq!(
+        discarded(&lispm.receive(&phone.peer, init)),
+        Some(Discard::Duplicate)
+    );
+}
+
+#[test]
+fn a_lost_open_frame_is_sent_again_at_the_retry_interval() {
+    let (mut lispm, mut phone) = restarted();
+    let init = phone.connect();
+    phone.now = Millis::new(START.after(RETRY_INTERVAL).get() - 1);
+    assert!(phone.step(device::Input::Tick).unwrap().is_empty());
+    phone.now = START.after(RETRY_INTERVAL);
+    let again = single(transmitted(&phone.step(device::Input::Tick).unwrap()));
+    assert_eq!(again, init);
+    // The first one never arrived; the second opens the channel.
+    let answered = lispm.receive(&phone.peer, again);
+    let channel = single(opened(&answered));
+    let accept = single(frames_to(&answered, &phone.peer));
+    let effects = phone.receive(&lispm.peer(), accept);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, device::Effect::Opened(id) if *id == channel))
+    );
+}
+
+#[test]
+fn another_frame_on_an_open_channel_is_discarded() {
+    let (mut lispm, mut phone) = restarted();
+    let init = phone.connect();
+    lispm.receive(&phone.peer, init.clone());
+    let mut other = init;
+    if let Some(last) = other.last_mut() {
+        *last ^= 1;
+    }
+    assert_eq!(
+        discarded(&lispm.receive(&phone.peer, other)),
+        Some(Discard::Duplicate)
     );
 }
 
