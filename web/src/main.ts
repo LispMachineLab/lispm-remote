@@ -5,8 +5,8 @@
 
 /**
  * What the owner sees on the device: how the connection stands, pairing
- * (the camera, then the fingerprint to compare), and LispM's agents, each
- * a chat (chat.ts).  The page takes from its URL
+ * and reconnecting as steps (steps.ts, stepper.ts), and LispM's agents,
+ * each a chat (chat.ts).  The page takes from its URL
  *
  *   #TOKEN       an offer, as LispM's QR code opens the page (then removed)
  *   ?seed=URL    the seed node to join Rings through (https://node.rings.rs)
@@ -20,6 +20,8 @@ import { closeWindows, openWindows, showingWindows } from "./windows.js";
 import { button, byId, h, rebuild } from "./dom.js";
 import { messageOf, type Options, Remote } from "./remote.js";
 import { scan, takeToken } from "./scan.js";
+import { Stepper } from "./stepper.js";
+import { steps } from "./steps.js";
 
 const DEFAULT_SEED = "https://node.rings.rs";
 const DEFAULT_ICE = "stun://stun.l.google.com:19302";
@@ -74,6 +76,13 @@ const windowsButton = byId<HTMLButtonElement>("open-windows");
 let remote: Remote | null = null;
 let scanning: AbortController | null = null;
 
+/** How long the steps stay after they are all done, in milliseconds. */
+const LINGER_MS = 2_500;
+const stepper = new Stepper({ scan: startScan, cancel: stopScan });
+pairSection.replaceChildren(stepper.element);
+/** The flow the steps showed last, if they showed. */
+let flow: "pair" | "reconnect" | null = null;
+
 function showStatus(tone: string, text: string): void {
   statusLine.className = `status ${tone}`;
   statusLine.textContent = text;
@@ -87,14 +96,10 @@ function startScan(): void {
   const controller = new AbortController();
   scanning = controller;
   render();
-  const video = pairSection.querySelector("video");
-  if (!video) {
-    return;
-  }
-  scan(video, controller.signal).then(
+  scan(stepper.video, controller.signal).then(
     (token) => {
       scanning = null;
-      remote?.pairWith(token);
+      remote?.pairWith(token, "camera");
       render();
     },
     (error: unknown) => {
@@ -115,38 +120,59 @@ function stopScan(): void {
   render();
 }
 
-function renderPair(current: Remote): void {
-  pairSection.hidden = false;
-  if (scanning) {
-    rebuild(pairSection, "scan", () => {
-      const video = h("video");
-      // Inline and silent, or a phone will not play it by itself.
-      video.muted = true;
-      video.playsInline = true;
-      return [h("h2", {}, "Scan LispM's code"), video, button("Cancel", stopScan, "quiet")];
-    });
-  } else if (current.phase === "pairing" && current.fingerprint) {
-    const fingerprint = current.fingerprint;
-    rebuild(pairSection, `fingerprint ${fingerprint}`, () => [
-      h("h2", {}, "Compare the fingerprint"),
-      h("p", { class: "fingerprint" }, fingerprint),
-      h("p", {}, "If Emacs shows the same, press a there to approve this device."),
-    ]);
-  } else if (current.waitingToPair) {
-    rebuild(pairSection, "waiting", () => [
-      h("h2", {}, "Pairing"),
-      h("p", {}, "This device pairs with LispM once it is on Rings Network."),
-    ]);
-  } else if (!current.pairing && current.phase !== "pairing") {
-    rebuild(pairSection, "unpaired", () => [
-      h("h2", {}, "Pair with LispM"),
-      h("p", {}, "In Emacs, run M-x lispm-remote-pair, then scan the code it shows."),
-      button("Scan the code", startScan, "primary"),
-    ]);
-  } else {
-    pairSection.hidden = true;
-    rebuild(pairSection, "", () => []);
+/** Whether LispM's state came on the session open now. */
+function settled(current: Remote): boolean {
+  return current.phase === "open" && current.stateAt >= current.openedAt;
+}
+
+/** Which steps to show now: pairing's, reconnecting's, or none. */
+function flowOf(current: Remote, now: number): "pair" | "reconnect" | null {
+  if (scanning || current.waitingToPair || current.phase === "pairing" || !current.pairing) {
+    return "pair";
   }
+  // A device that lost its peers has a session only in name.
+  const done = settled(current) && current.peers > 0;
+  if (!done) {
+    // Paired a moment ago: the same steps go on to the end.
+    return flow === "pair" ? "pair" : "reconnect";
+  }
+  return flow && now - current.stateAt < LINGER_MS ? flow : null;
+}
+
+function renderPair(current: Remote): void {
+  const now = Date.now();
+  flow = flowOf(current, now);
+  pairSection.hidden = flow === null;
+  if (flow === null) {
+    return;
+  }
+  // While pairing anew, what the device had before does not count.
+  const fresh =
+    flow === "reconnect" || (current.codeAt !== null && current.pairedAt >= current.codeAt);
+  const open = fresh && current.phase === "open" && current.peers > 0;
+  stepper.update(
+    flow,
+    steps({
+      flow,
+      online: navigator.onLine !== false,
+      peers: current.peers,
+      joinAttempts: current.joinAttempts,
+      seed: current.seed,
+      scanning: scanning !== null,
+      code: current.code,
+      phase: current.phase,
+      sends: current.sends,
+      sent: current.sent,
+      unanswered: current.unanswered,
+      fingerprint: current.fingerprint,
+      since: current.codeAt,
+      expires: current.expires,
+      open,
+      state: open && settled(current),
+      now,
+    }),
+    { scanning: scanning !== null, fingerprint: current.fingerprint },
+  );
 }
 
 // ----------------------------------------------------------------------
@@ -239,9 +265,11 @@ async function main(): Promise<void> {
     (globalThis as { lispmRemote?: Remote }).lispmRemote = remote;
   }
   if (token) {
-    remote.pairWith(token);
+    remote.pairWith(token, "link");
   }
   render();
+  // The countdown and the steps that linger move with the clock.
+  setInterval(render, 1_000);
 }
 
 void main();
