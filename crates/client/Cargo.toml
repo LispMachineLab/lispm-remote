@@ -48,6 +48,7 @@ web-sys = { version = "=0.3.98", features = [
   "HtmlButtonElement",
   "HtmlCanvasElement",
   "HtmlElement",
+  "HtmlHeadElement",
   "HtmlTextAreaElement",
   "ImageBitmap",
   "InputEvent",

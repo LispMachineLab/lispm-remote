@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- LispM Remote: LispM's windows, redrawn here.
+<!-- LispM Remote: the display's development page, on the local network.
      Copyright (C) 2026  Ryan.K
      SPDX-License-Identifier: AGPL-3.0-or-later -->
 <html lang="en">
@@ -12,18 +12,6 @@
 <script type="module" src="main.js"></script>
 </head>
 <body>
-<header id="bar">
-  <nav id="tabs" aria-label="Open windows"></nav>
-  <button id="add" type="button" title="Open a window" aria-controls="windows">+</button>
-  <span id="status" role="status"></span>
-</header>
-<section id="windows" hidden aria-label="LispM's windows">
-  <ul id="window-list"></ul>
-</section>
-<main id="screen">
-  <canvas id="canvas"></canvas>
-  <textarea id="keys" aria-label="Keyboard" autocapitalize="off" autocomplete="off"
-            autocorrect="off" spellcheck="false"></textarea>
-</main>
+<main id="display"></main>
 </body>
 </html>
