@@ -14,10 +14,15 @@
  *   a state arrives.
  * - Every 1 s, and on the browser's `online` and `offline` events, the
  *   page checks its peers.  With none, it joins Rings again through the
- *   seed, retrying every second: for about 5 s after the network drops, a
- *   seed still holds the device's old connection and refuses a new one
- *   ("Found existing transport").  Once back, it closes the channel it had
- *   and opens a new one, Noise KK, without scanning again.
+ *   seed, retrying every second at first: for about 5 s after the network
+ *   drops, a seed still holds the device's old connection and refuses a
+ *   new one ("Found existing transport").  Joins that keep failing are
+ *   spaced out (join.ts), so that a page left alone does not hammer the
+ *   seed, and more so when the seed answers but turns the page away, as
+ *   one that rate-limits its address does; the `online` event and the page
+ *   coming back into view try again at once.  Once
+ *   back, it closes the channel it had and opens a new one, Noise KK,
+ *   without scanning again.
  * - When LispM has said nothing for 30 s, the page asks for the state; if
  *   nothing comes within 12 s, it opens a new channel, in case Emacs
  *   restarted and forgot the old one.
@@ -35,6 +40,7 @@
 import initDevice, { generateStatic, Initiator } from "lispm-remote-web";
 import initRings, { ProcessorConfig, Provider, type ProviderListener } from "rings-node";
 import { account, delegatee } from "./account.js";
+import { type JoinFailure, joinDelay, rateLimited, unseen } from "./join.js";
 import { expiry } from "./steps.js";
 import { Store } from "./store.js";
 
@@ -225,6 +231,10 @@ export class Remote {
   joinError: string | null = null;
   /** Joins that failed since the device last had a peer. */
   joinAttempts = 0;
+  /** When the page joins again, in milliseconds since the epoch. */
+  nextJoinAt = 0;
+  /** Of those failed joins, how many the seed turned away. */
+  joinRefusals = 0;
   /** How the code being paired with came: through the camera or its link. */
   code: "camera" | "link" | null = null;
   /** When that code came, and when it expires, in milliseconds. */
@@ -343,7 +353,15 @@ export class Remote {
     setInterval(() => void this.watch(), WATCH_MS);
     addEventListener("online", () => {
       this.lost();
+      this.joinNow();
       void this.watch();
+    });
+    // A phone that wakes the page wants it back on the network at once.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && this.peers === 0) {
+        this.joinNow();
+        void this.watch();
+      }
     });
     addEventListener("offline", () => this.lost());
     void this.watch();
@@ -544,8 +562,14 @@ export class Remote {
       if (peers > 0) {
         this.joinError = null;
         this.joinAttempts = 0;
+        this.joinRefusals = 0;
+        this.nextJoinAt = 0;
         this.proceed();
-      } else if (navigator.onLine !== false && Date.now() - this.joinedAt >= JOIN_GRACE_MS) {
+      } else if (
+        navigator.onLine !== false &&
+        Date.now() - this.joinedAt >= JOIN_GRACE_MS &&
+        Date.now() >= this.nextJoinAt
+      ) {
         await this.join();
       }
     } catch (error) {
@@ -564,7 +588,36 @@ export class Remote {
     } catch (error) {
       this.joinError = messageOf(error);
       this.joinAttempts++;
+      if ((await this.failure(this.joinError)) === "refused") {
+        this.joinRefusals++;
+      }
+      this.nextJoinAt = Date.now() + joinDelay(this.joinAttempts, this.joinRefusals);
     }
+  }
+
+  /** Why the join failed with `message`.  A request the browser does not
+   * show an answer to is asked once more, without CORS: if the seed answers
+   * that, it is there and turns the page away. */
+  private async failure(message: string): Promise<JoinFailure> {
+    if (rateLimited(message)) {
+      return "refused";
+    }
+    if (!unseen(message) || navigator.onLine === false) {
+      return "network";
+    }
+    try {
+      await timeout(fetch(this.options.seed, { mode: "no-cors", cache: "no-store" }), 5_000, "Asking the seed");
+      return "refused";
+    } catch {
+      return "network";
+    }
+  }
+
+  /** Joins at the next look, as at first, without waiting out the delay. */
+  private joinNow(): void {
+    this.joinAttempts = 0;
+    this.joinRefusals = 0;
+    this.nextJoinAt = 0;
   }
 
   /** The network went away: what the channel had may be lost. */
