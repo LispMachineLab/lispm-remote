@@ -2229,6 +2229,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "emacs",
+ "lispm-remote-protocol",
  "rings-core",
  "rings-node",
  "rings-rpc",

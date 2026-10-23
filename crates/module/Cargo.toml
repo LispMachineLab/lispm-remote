@@ -28,4 +28,4 @@ thiserror.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+lispm-remote-protocol = { path = "../protocol" }
