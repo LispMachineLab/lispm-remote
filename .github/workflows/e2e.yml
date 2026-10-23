@@ -63,6 +63,8 @@ jobs:
         run: make module
       - name: Page
         run: make page
+      - name: Page tests
+        run: cd web && npm test
       - name: Playwright
         run: |
           cd test/e2e
