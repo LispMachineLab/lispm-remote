@@ -35,6 +35,7 @@
 
 (require 'ert)
 (require 'lispm-remote)
+(require 'lispm-remote-display)
 (require 'lispm-remote-node-test)
 
 (defconst lispm-remote-test--lispm-lisp
@@ -72,7 +73,7 @@
                                        (:copier nil))
   "A phone: a Rings node and the device's machine, with what it saw."
   account secret store node machine timer pairing fingerprint states failures
-  unpaired send-errors asking asked-at)
+  unpaired send-errors asking asked-at displays)
 
 (defun lispm-remote-test--phone-start (phone)
   "Start PHONE's node with its account, and its machine from its stored
@@ -132,10 +133,13 @@ again while none came since the channel opened, as the page does."
        (setf (lispm-remote-test-phone-pairing phone) nil
              (lispm-remote-test-phone-unpaired phone) t))
       (`(delivered ,payload)
-       (setf (lispm-remote-test-phone-asking phone) nil)
-       (push (json-parse-string (decode-coding-string payload 'utf-8)
-                                :object-type 'alist :array-type 'list)
-             (lispm-remote-test-phone-states phone)))
+       (if (= (aref payload 0) 1)
+           ;; The display's messages: kept as they came, newest first.
+           (push payload (lispm-remote-test-phone-displays phone))
+         (setf (lispm-remote-test-phone-asking phone) nil)
+         (push (json-parse-string (decode-coding-string payload 'utf-8)
+                                  :object-type 'alist :array-type 'list)
+               (lispm-remote-test-phone-states phone))))
       (`(failed . ,why)
        (push why (lispm-remote-test-phone-failures phone))))))
 
@@ -856,5 +860,54 @@ tester, bound as BINDINGS says: (PHONE)."
           (should (equal (lispm-remote--chat "nobody")
                          '((type . "chat") (agent . "nobody") (items . []) (more . 0)))))
       (kill-buffer buffer))))
+
+;;;; LispM's windows over the channel
+
+(defun lispm-remote-test--display-received (phone tag)
+  "Return the display messages tagged TAG that PHONE received."
+  (seq-filter (lambda (payload) (= (aref payload 1) tag))
+              (lispm-remote-test-phone-displays phone)))
+
+(defun lispm-remote-test--display-send (phone payload)
+  "Send the display message PAYLOAD from PHONE."
+  (lispm-remote-test--phone-apply
+   phone (lispm-remote-core-initiator-send (lispm-remote-test-phone-machine phone) payload)))
+
+(ert-deftest lispm-remote-test-a-phone-opens-lispms-windows-over-its-channel ()
+  "A paired phone says hello to the display over its channel, sees the
+windows it may open, opens one, and is sent that window's screen; LispM
+made a tty frame for it, and only after the phone asked."
+  (skip-unless (lispm-remote-node-test--module-p))
+  (lispm-remote-test--with-world (_relay phone)
+    (unwind-protect
+        (progn
+          (lispm-remote-test--pair phone)
+          (should-not lispm-remote-display--channels)
+          ;; Hello: version 1, tag 8, input numbered from 1.
+          (lispm-remote-test--display-send phone (unibyte-string 1 8 1))
+          (lispm-remote-node-test--wait
+           (lambda () (lispm-remote-test--display-received phone 1)) "the windows")
+          ;; Open "notes" at 40x10, cells 8x16: version 1, tag 1.
+          (with-current-buffer (get-buffer-create "notes")
+            (insert "Typed in LispM, redrawn on the phone."))
+          (lispm-remote-test--display-send
+           phone (concat (unibyte-string 1 1 5) "notes" (unibyte-string 40 10 8 16)))
+          (lispm-remote-node-test--wait
+           (lambda () (lispm-remote-test--display-received phone 3)) "a frame")
+          (should (lispm-remote-test--display-received phone 2))
+          (let ((surface (caar lispm-remote-display--frames)))
+            (should surface)
+            ;; A batch Emacs redraws only when asked.
+            (lispm-remote-node-test--wait
+             (lambda ()
+               (redisplay t)
+               (string-search "Typed in LispM, redrawn on the phone."
+                              (or (lispm-remote-core-display-text lispm-remote-display--handle
+                                                                  surface)
+                                  "")))
+             "the window drawn")))
+      (lispm-remote-display-stop)
+      (when (get-buffer "notes")
+        (kill-buffer "notes")))))
 
 ;;; lispm-remote-test.el ends here
