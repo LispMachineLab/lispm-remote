@@ -17,6 +17,7 @@
     "outDir": "dist",
     "paths": {
       "lispm-remote-web": ["./pkg/lispm_remote_web.d.ts"],
+      "lispm-remote-client": ["./pkg/lispm_remote_client.d.ts"],
       "rings-node": ["./node_modules/@ringsnetwork/rings-node/dist/rings_node.d.ts"]
     }
   },

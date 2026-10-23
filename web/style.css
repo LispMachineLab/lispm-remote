@@ -539,3 +539,36 @@ footer {
 footer .did {
   overflow-wrap: anywhere;
 }
+
+/* LispM's windows: the display's view over the whole page. */
+.windows {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  padding-top: env(safe-area-inset-top);
+}
+
+.windows[hidden] {
+  display: none;
+}
+
+.windows-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+}
+
+.windows-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.windows-view {
+  flex: 1;
+  min-height: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+}
