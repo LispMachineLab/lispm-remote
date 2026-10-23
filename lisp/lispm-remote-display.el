@@ -44,6 +44,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 (require 'lispm-remote-module)
 
@@ -218,9 +219,23 @@ CELL-WIDTH and CELL-HEIGHT are a client's cell in pixels, for images."
                         (error (lispm-remote-core-display-close lispm-remote-display--handle surface)
                                (signal (car error) (cdr error))))))
     (push (cons surface frame) lispm-remote-display--frames)
+    (lispm-remote-display--keep-drawn)
     (funcall lispm-remote-display-show-function frame window)
     (run-hook-with-args 'lispm-remote-display-open-functions frame)
     frame))
+
+(defun lispm-remote-display--initial-p (frame)
+  "Return non-nil when FRAME is the initial frame, the one on no display."
+  (equal (terminal-name (frame-terminal frame)) "initial_terminal"))
+
+(defun lispm-remote-display--keep-drawn ()
+  "Select one of the display's frames while the initial frame is selected.
+With the initial frame selected, as in a daemon nobody has visited yet,
+Emacs redisplays nothing (see `redisplay-skip-initial-frame'), so the
+display's frames would never change."
+  (when (lispm-remote-display--initial-p (selected-frame))
+    (when-let* ((frame (seq-find #'frame-live-p (mapcar #'cdr lispm-remote-display--frames))))
+      (select-frame frame t))))
 
 (defun lispm-remote-display-frame-surface (frame)
   "Return the surface FRAME is the display's frame for, or nil."
@@ -243,6 +258,7 @@ CELL-WIDTH and CELL-HEIGHT are a client's cell in pixels, for images."
 (defun lispm-remote-display--forget (surface)
   "Close SURFACE in the module and forget its frame."
   (setq lispm-remote-display--frames (assq-delete-all surface lispm-remote-display--frames))
+  (lispm-remote-display--keep-drawn)
   (when (lispm-remote-display-live-p)
     (lispm-remote-core-display-close lispm-remote-display--handle surface)))
 

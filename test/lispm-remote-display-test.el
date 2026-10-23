@@ -111,6 +111,31 @@ the buffer's changes."
        (lambda () (null (lispm-remote-display-test--text surface))))
       (should-not (assq surface lispm-remote-display--frames)))))
 
+(ert-deftest lispm-remote-display-test-drawn-while-only-the-initial-frame-was-selected ()
+  "The display's frames redraw even when the initial frame was selected,
+as in a daemon nobody visited: Emacs redisplays nothing then, so the
+display keeps one of its own frames selected."
+  (lispm-remote-display-test--with-display
+    (skip-unless (lispm-remote-display--initial-p (selected-frame)))
+    (let* ((initial (selected-frame))
+           (buffer (get-buffer-create "lispm-remote-display-test-initial"))
+           (kept (lispm-remote-display-open (buffer-name buffer) 40 8))
+           (closed (lispm-remote-display-open "*scratch*" 40 8))
+           (surface (lispm-remote-display-frame-surface kept)))
+      (unwind-protect
+          (progn
+            (select-frame initial)
+            (lispm-remote-display-close (lispm-remote-display-frame-surface closed))
+            (lispm-remote-display-test--wait
+             (lambda () (not (lispm-remote-display--initial-p (selected-frame)))))
+            (with-current-buffer buffer
+              (insert "drawn with the initial frame selected"))
+            (lispm-remote-display-test--wait
+             (lambda ()
+               (string-match-p "drawn with the initial frame selected"
+                               (lispm-remote-display-test--text surface)))))
+        (kill-buffer buffer)))))
+
 (ert-deftest lispm-remote-display-test-buffers-are-offered ()
   "The windows offered are the buffers a person works in."
   (let ((windows (lispm-remote-display-buffers)))
