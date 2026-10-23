@@ -91,6 +91,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'svg)
 (require 'tabulated-list)
 (require 'lispm-remote-node)
 
@@ -210,8 +211,14 @@ to it, the agent whose conversation it WATCHes, and the CHAT last sent."
   "How many answers to commands LispM Remote keeps, for repeats.")
 
 (defvar lispm-remote--offer nil
-  "The offer on show: a plist of :token, :name and :fingerprint of the
-device asking, :ended with how it ended, and :paired with whom.")
+  "The offer on show: a plist of :token, :shown and :expires (times),
+:name and :fingerprint of the device asking, :ended with how it ended,
+:paired and :paired-peer with whom, :opened once that device opened a
+session, and the drawing of the code, :rows and :image.")
+
+(defvar lispm-remote--peers nil
+  "How many peers the node was connected to when last checked, or nil
+before the first check.")
 
 (defconst lispm-remote--buffer "*LispM Remote*"
   "The buffer pairing is shown in.")
@@ -313,7 +320,7 @@ nil when there is none."
     (lispm-remote-node-stop lispm-remote--node))
   (setq lispm-remote--node nil lispm-remote--machine nil lispm-remote--timer nil
         lispm-remote--state-timer nil lispm-remote--sessions nil lispm-remote--offer nil
-        lispm-remote--answers nil))
+        lispm-remote--answers nil lispm-remote--peers nil))
 
 (defun lispm-remote--check ()
   "Let an expired offer end, send a changed state, and rejoin the network
@@ -322,13 +329,23 @@ when the node has lost every peer."
     (lispm-remote--apply (lispm-remote-core-responder-tick lispm-remote--machine))
     (lispm-remote--send-state)
     (lispm-remote--send-chats)
+    (lispm-remote--check-peers t)))
+
+(defun lispm-remote--check-peers (&optional rejoin)
+  "Count the node's peers, redrawing the pairing screen when the count
+changed; with REJOIN, join the network again when there are none."
+  (when lispm-remote--node
     (lispm-remote-node-request
      lispm-remote--node "listPeers" nil
      (lambda (result error)
-       (unless (or error
-                   (seq-some (lambda (peer) (equal (alist-get 'state peer) "Connected"))
-                             (alist-get 'peers result)))
-         (lispm-remote--join))))))
+       (unless error
+         (let ((count (seq-count (lambda (peer) (equal (alist-get 'state peer) "Connected"))
+                                 (alist-get 'peers result))))
+           (unless (eql count lispm-remote--peers)
+             (setq lispm-remote--peers count)
+             (lispm-remote--refresh))
+           (when (and rejoin (zerop count))
+             (lispm-remote--join))))))))
 
 (defun lispm-remote--join ()
   "Join the network through `lispm-remote-seeds'."
@@ -336,7 +353,9 @@ when the node has lost every peer."
     (lispm-remote-node-connect
      lispm-remote--node seed
      (lambda (_did error)
-       (when error (lispm-remote--log "joining through %s failed: %s" seed error))))))
+       (if error
+           (lispm-remote--log "joining through %s failed: %s" seed error)
+         (lispm-remote--check-peers))))))
 
 ;;;; Frames and effects
 
@@ -354,7 +373,11 @@ when the node has lost every peer."
                                (lambda (_sent error)
                                  (when error (lispm-remote--log "sending to %s failed: %s" to error)))))
       (`(show-offer ,token)
-       (setq lispm-remote--offer (list :token token))
+       (when-let* ((image (plist-get lispm-remote--offer :image)))
+         (lispm-remote--flush image))
+       (setq lispm-remote--offer
+             (list :token token :shown (float-time)
+                   :expires (+ (float-time) lispm-remote-offer-seconds)))
        (lispm-remote--render))
       (`(ask-owner ,name ,fingerprint)
        (setq lispm-remote--offer (plist-put (plist-put lispm-remote--offer :name name)
@@ -370,7 +393,8 @@ when the node has lost every peer."
         (cons (list :peer peer :key key :name name :paired-at paired-at)
               (seq-remove (lambda (device) (equal (plist-get device :peer) peer))
                           (lispm-remote--devices))))
-       (setq lispm-remote--offer (plist-put lispm-remote--offer :paired name))
+       (setq lispm-remote--offer (plist-put (plist-put lispm-remote--offer :paired name)
+                                            :paired-peer peer))
        (lispm-remote--render)
        (message "LispM Remote: paired with %s" name))
       (`(forgotten ,peer)
@@ -380,6 +404,9 @@ when the node has lost every peer."
       (`(opened ,peer ,channel)
        (push (lispm-remote--session-create :peer peer :channel channel) lispm-remote--sessions)
        (lispm-remote--send-state peer channel)
+       (when (equal peer (plist-get lispm-remote--offer :paired-peer))
+         (setq lispm-remote--offer (plist-put lispm-remote--offer :opened t))
+         (lispm-remote--render))
        (run-hook-with-args 'lispm-remote-session-functions peer channel 'opened))
       (`(delivered ,peer ,channel ,payload)
        (lispm-remote--receive peer channel payload))
@@ -680,6 +707,7 @@ latest items that fit one message."
   (lispm-remote--require-mode)
   (lispm-remote--apply (lispm-remote-core-responder-offer lispm-remote--machine
                                                           lispm-remote-offer-seconds))
+  (lispm-remote--check-peers)
   (pop-to-buffer (lispm-remote--render)))
 
 (defun lispm-remote-approve (&optional fingerprint)
@@ -717,7 +745,9 @@ FINGERPRINT, when given, must be the one the device shows."
 
 (define-derived-mode lispm-remote-pair-mode special-mode "LispM Remote"
   "Mode of the buffer a device pairs with LispM in."
-  (setq-local cursor-type nil))
+  (setq-local cursor-type nil
+              left-margin-width 2)
+  (add-hook 'kill-buffer-hook #'lispm-remote--stop-ticking nil t))
 
 (defun lispm-remote--qr-rows ()
   "Return the rows of the offer's QR code, strings of 1 and 0, with a
@@ -727,19 +757,6 @@ quiet zone of four modules."
          (blank (make-string (+ 8 (length (car rows))) ?0))
          (quiet (make-list 4 blank)))
     (append quiet (mapcar (lambda (row) (concat "0000" row "0000")) rows) quiet)))
-
-(defun lispm-remote--qr-svg (rows size)
-  "Return ROWS as an SVG image SIZE pixels a side."
-  (let ((modules (length rows)))
-    (with-temp-buffer
-      (insert (format "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" shape-rendering=\"crispEdges\"><rect width=\"%d\" height=\"%d\" fill=\"#fff\"/><path fill=\"#000\" d=\""
-                      size size modules modules modules modules))
-      (cl-loop for row in rows for y from 0
-               do (cl-loop for module across row for x from 0
-                           when (eq module ?1)
-                           do (insert (format "M%d %dh1v1h-1z" x y))))
-      (insert "\"/></svg>")
-      (buffer-string))))
 
 (defun lispm-remote--qr-text (rows)
   "Return ROWS as text, two rows a line, in half blocks, dark on light."
@@ -768,6 +785,392 @@ module (8 by default), for programs that read images."
           (dotimes (_ scale)
             (insert line "\n")))))))
 
+;;;; The pairing screen
+
+;; The screen walks through the steps both screens show, the page's too:
+;;
+;;   Join -- Scan -- Reach -- Confirm -- Connected
+;;
+;; A graphical Emacs draws the steps, the code, the countdown and the
+;; fingerprint as SVG; a terminal gets the same in characters.  Each image
+;; carries its text, so the buffer reads the same either way.  While the
+;; screen waits on something it is redrawn every second; the QR code is
+;; drawn once per code, and the images a redraw replaces are flushed.
+
+(defface lispm-remote-title '((t :inherit bold :height 1.3))
+  "The title of the pairing screen."
+  :group 'lispm-remote)
+
+(defface lispm-remote-done '((t :inherit success))
+  "A step done."
+  :group 'lispm-remote)
+
+(defface lispm-remote-active '((t :inherit (bold link) :underline nil))
+  "The step under way."
+  :group 'lispm-remote)
+
+(defface lispm-remote-pending '((t :inherit shadow))
+  "A step to come."
+  :group 'lispm-remote)
+
+(defface lispm-remote-failed '((t :inherit error))
+  "A step that failed."
+  :group 'lispm-remote)
+
+(defface lispm-remote-fingerprint '((t :inherit (bold fixed-pitch) :height 2.0))
+  "The fingerprint the owner compares."
+  :group 'lispm-remote)
+
+(defface lispm-remote-button '((t :inherit custom-button))
+  "The buttons of the pairing screen."
+  :group 'lispm-remote)
+
+(defconst lispm-remote--steps
+  '((join . "Join") (scan . "Scan") (reach . "Reach") (confirm . "Confirm")
+    (connected . "Connected"))
+  "The steps of pairing, as both screens show them.")
+
+(defvar-local lispm-remote--ticker nil
+  "The timer redrawing the pairing screen while it waits.")
+
+(defvar-local lispm-remote--images nil
+  "The images the last drawing of the pairing screen made, but the code.")
+
+(defun lispm-remote--progress (offer)
+  "Return how far pairing through OFFER went: an alist of each step and
+its state, `done', `active', `pending' or `failed'."
+  (let* ((ended (plist-get offer :ended))
+         (claimed (or (plist-get offer :fingerprint) (plist-get offer :paired)))
+         (joined (or claimed (and lispm-remote--peers (> lispm-remote--peers 0))))
+         (states `((join . ,(if joined 'done 'active))
+                   (scan . ,(cond (claimed 'done) ((plist-get offer :token) 'active) (t 'pending)))
+                   (reach . ,(if claimed 'done 'pending))
+                   (confirm . ,(cond ((plist-get offer :paired) 'done) (claimed 'active) (t 'pending)))
+                   (connected . ,(cond ((plist-get offer :opened) 'done)
+                                       ((plist-get offer :paired) 'active)
+                                       (t 'pending))))))
+    (if (not ended)
+        states
+      (let ((at (if claimed 'confirm 'scan)))
+        (mapcar (lambda (step)
+                  (cond ((eq (car step) at) (cons at 'failed))
+                        ((eq (cdr step) 'active) (cons (car step) 'pending))
+                        (t step)))
+                states)))))
+
+(defun lispm-remote--waiting-p (offer)
+  "Return non-nil when the screen for OFFER waits on something that moves."
+  (and (plist-get offer :token)
+       (not (plist-get offer :ended))
+       (not (plist-get offer :opened))))
+
+(defun lispm-remote--seconds-left (offer)
+  "Return the seconds OFFER still works for."
+  (max 0 (- (or (plist-get offer :expires) 0) (float-time))))
+
+(defun lispm-remote--color (face fallback)
+  "Return FACE's foreground, or FALLBACK where it has none, as in batch."
+  (let ((color (face-foreground face nil t)))
+    (if (and (stringp color) (not (string-prefix-p "unspecified" color))
+             (color-defined-p color))
+        (apply #'format "#%02x%02x%02x"
+               (mapcar (lambda (value) (/ value 257)) (color-values color)))
+      fallback)))
+
+(defun lispm-remote--palette ()
+  "Return the colors of the screen, from the faces: a plist."
+  (list :done (lispm-remote--color 'lispm-remote-done "#2e9d4f")
+        :active (lispm-remote--color 'lispm-remote-active "#2f6fde")
+        :pending (lispm-remote--color 'lispm-remote-pending "#9a9a9a")
+        :failed (lispm-remote--color 'lispm-remote-failed "#d23b3b")
+        :text (lispm-remote--color 'default "#222222")))
+
+(defun lispm-remote--graphic-p ()
+  "Return non-nil when the screen is drawn with SVG images."
+  (and (display-graphic-p) (image-type-available-p 'svg)))
+
+(defun lispm-remote--flush (image)
+  "Free IMAGE's cached pixels, in an Emacs built with images."
+  (when (fboundp 'image-flush)
+    (image-flush image)))
+
+(defun lispm-remote--insert-image (image text)
+  "Insert IMAGE, showing TEXT in its place where images are not shown."
+  (push image lispm-remote--images)
+  (insert-image image text))
+
+;;;;; The steps
+
+(defun lispm-remote--steps-text (progress)
+  "Return PROGRESS as a line of characters."
+  (mapconcat
+   (lambda (step)
+     (let ((label (alist-get (car step) lispm-remote--steps)))
+       (pcase (cdr step)
+         ('done (propertize (concat "✔ " label) 'face 'lispm-remote-done))
+         ('active (propertize (concat "◉ " label) 'face 'lispm-remote-active))
+         ('failed (propertize (concat "✖ " label) 'face 'lispm-remote-failed))
+         (_ (propertize (concat "○ " label) 'face 'lispm-remote-pending)))))
+   progress (propertize " ── " 'face 'lispm-remote-pending)))
+
+(defun lispm-remote--steps-svg (progress pulse)
+  "Return PROGRESS drawn as a row of steps; PULSE swells the active one."
+  (let* ((palette (lispm-remote--palette))
+         (width 600) (height 66) (left 36)
+         (gap (/ (- width (* 2 left)) (1- (length progress))))
+         (svg (svg-create width height)))
+    (cl-loop for (_ . state) in progress for x from left by gap
+             repeat (1- (length progress))
+             do (svg-line svg x 22 (+ x gap) 22 :stroke-width 3 :stroke-linecap "round"
+                          :stroke (plist-get palette (if (eq state 'done) :done :pending))))
+    (cl-loop for (step . state) in progress for x from left by gap
+             for color = (plist-get palette (pcase state ('done :done) ('active :active)
+                                                  ('failed :failed) (_ :pending)))
+             do (pcase state
+                  ('done
+                   (svg-circle svg x 22 13 :fill color)
+                   (svg-polyline svg (list (cons (- x 6) 22) (cons (- x 1) 27) (cons (+ x 7) 17))
+                                 :fill "none" :stroke "#ffffff" :stroke-width 3
+                                 :stroke-linecap "round" :stroke-linejoin "round"))
+                  ('active
+                   (svg-circle svg x 22 (if pulse 16 13) :fill color :fill-opacity 0.15)
+                   (svg-circle svg x 22 13 :fill "none" :stroke color :stroke-width 3)
+                   (svg-circle svg x 22 5 :fill color))
+                  ('failed
+                   (svg-circle svg x 22 13 :fill color)
+                   (svg-line svg (- x 5) 17 (+ x 5) 27 :stroke "#ffffff" :stroke-width 3
+                             :stroke-linecap "round")
+                   (svg-line svg (+ x 5) 17 (- x 5) 27 :stroke "#ffffff" :stroke-width 3
+                             :stroke-linecap "round"))
+                  (_ (svg-circle svg x 22 11 :fill "none" :stroke color :stroke-width 2)))
+             (svg-text svg (alist-get step lispm-remote--steps)
+                       :x x :y 58 :text-anchor "middle" :font-size 13
+                       :font-family "sans-serif" :fill color
+                       :font-weight (if (eq state 'active) "bold" "normal")))
+    svg))
+
+(defun lispm-remote--insert-steps (progress)
+  "Insert PROGRESS, drawn or in characters."
+  (let ((text (lispm-remote--steps-text progress)))
+    (if (lispm-remote--graphic-p)
+        (lispm-remote--insert-image
+         (svg-image (lispm-remote--steps-svg progress (cl-evenp (truncate (float-time))))
+                    :ascent 'center)
+         text)
+      (insert text))
+    (insert "\n")))
+
+;;;;; The countdown
+
+(defun lispm-remote--bar-text (fraction width)
+  "Return a bar WIDTH characters long, FRACTION of it filled."
+  (let* ((eighths (round (* 8 width (min 1 (max 0 fraction)))))
+         (full (/ eighths 8))
+         (part (% eighths 8)))
+    (concat (propertize (concat (make-string full ?█)
+                                (if (> part 0) (string (aref " ▏▎▍▌▋▊▉" part)) ""))
+                        'face (if (< fraction 0.2) 'lispm-remote-failed 'lispm-remote-active))
+            (propertize (make-string (max 0 (- width full (if (> part 0) 1 0))) ?─)
+                        'face 'lispm-remote-pending))))
+
+(defun lispm-remote--bar-svg (fraction width)
+  "Return a rounded bar WIDTH pixels long, FRACTION of it filled."
+  (let* ((palette (lispm-remote--palette))
+         (svg (svg-create width 10)))
+    (svg-rectangle svg 0 0 width 10 :rx 5 :fill (plist-get palette :pending) :fill-opacity 0.3)
+    (svg-rectangle svg 0 0 (max 10 (* width (min 1 (max 0 fraction)))) 10 :rx 5
+                   :fill (plist-get palette (if (< fraction 0.2) :failed :active)))
+    svg))
+
+(defun lispm-remote--insert-countdown (offer)
+  "Insert how long OFFER still works, as a bar and in minutes."
+  (let* ((left (lispm-remote--seconds-left offer))
+         (fraction (/ left (float (max 1 lispm-remote-offer-seconds))))
+         (label (format "  %d:%02d left" (/ (truncate left) 60) (% (truncate left) 60))))
+    (if (lispm-remote--graphic-p)
+        (lispm-remote--insert-image (svg-image (lispm-remote--bar-svg fraction 300) :ascent 'center)
+                                    (lispm-remote--bar-text fraction 30))
+      (insert (lispm-remote--bar-text fraction 30)))
+    (insert (propertize label 'face (if (< fraction 0.2) 'lispm-remote-failed 'lispm-remote-pending))
+            "\n")))
+
+;;;;; The code
+
+(defun lispm-remote--qr-svg (rows size)
+  "Return ROWS as a QR code SIZE pixels a side, in a frame whose corners
+take the active color."
+  (let ((modules (length rows))
+        (accent (plist-get (lispm-remote--palette) :active)))
+    (with-temp-buffer
+      (insert (format "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" viewBox=\"-1 -1 %d %d\">"
+                      size size (+ modules 2) (+ modules 2))
+              (format "<rect x=\"-1\" y=\"-1\" width=\"%d\" height=\"%d\" rx=\"2\" fill=\"#ffffff\"/>"
+                      (+ modules 2) (+ modules 2))
+              "<path shape-rendering=\"crispEdges\" fill=\"#000000\" d=\"")
+      (cl-loop for row in rows for y from 0
+               do (cl-loop for module across row for x from 0
+                           when (eq module ?1)
+                           do (insert (format "M%d %dh1v1h-1z" x y))))
+      (insert "\"/>")
+      (let ((far (+ modules 0.5)) (arm 4))
+        ;; One L at each corner, in the margin outside the quiet zone.
+        (dolist (corner `((-0.5 -0.5 1 1) (,far -0.5 -1 1) (-0.5 ,far 1 -1) (,far ,far -1 -1)))
+          (pcase-let ((`(,x ,y ,dx ,dy) corner))
+            (insert (format "<path d=\"M%s %sH%sV%s\" fill=\"none\" stroke=\"%s\" stroke-width=\"0.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+                            (+ x (* dx arm)) y x (+ y (* dy arm)) accent)))))
+      (insert "</svg>")
+      (buffer-string))))
+
+(defun lispm-remote--insert-code (offer)
+  "Insert OFFER's QR code: drawn once per code, or in half blocks."
+  (let ((rows (or (plist-get offer :rows)
+                  (let ((rows (lispm-remote--qr-rows)))
+                    (setq lispm-remote--offer (plist-put lispm-remote--offer :rows rows))
+                    rows))))
+    (if (lispm-remote--graphic-p)
+        (let ((image (or (plist-get lispm-remote--offer :image)
+                         (let ((image (create-image (lispm-remote--qr-svg rows 340) 'svg t
+                                                    :ascent 'center)))
+                           (setq lispm-remote--offer
+                                 (plist-put lispm-remote--offer :image image))
+                           image))))
+          (insert "  ")
+          (insert-image image "[QR code]"))
+      (insert (lispm-remote--qr-text rows)))
+    (insert "\n")))
+
+;;;;; The fingerprint and the outcome
+
+(defun lispm-remote--fingerprint-svg (fingerprint)
+  "Return FINGERPRINT drawn as two groups of four, in boxes."
+  (let* ((palette (lispm-remote--palette))
+         (accent (plist-get palette :active))
+         (svg (svg-create 300 64)))
+    (cl-loop for group in (split-string fingerprint "-") for x from 0 by 156
+             do (svg-rectangle svg (+ x 2) 2 140 60 :rx 10 :fill accent :fill-opacity 0.08
+                               :stroke accent :stroke-width 2)
+             (svg-text svg group :x (+ x 72) :y 44 :text-anchor "middle" :font-size 34
+                       :font-family "monospace" :font-weight "bold" :letter-spacing 4
+                       :fill (plist-get palette :text)))
+    svg))
+
+(defun lispm-remote--mark-svg (kind)
+  "Return a large round mark: a check for KIND `done', a cross for `failed'."
+  (let* ((palette (lispm-remote--palette))
+         (svg (svg-create 72 72)))
+    (svg-circle svg 36 36 32 :fill (plist-get palette (if (eq kind 'done) :done :failed)))
+    (if (eq kind 'done)
+        (svg-polyline svg '((21 . 37) (31 . 47) (52 . 26)) :fill "none" :stroke "#ffffff"
+                      :stroke-width 6 :stroke-linecap "round" :stroke-linejoin "round")
+      (svg-line svg 24 24 48 48 :stroke "#ffffff" :stroke-width 6 :stroke-linecap "round")
+      (svg-line svg 48 24 24 48 :stroke "#ffffff" :stroke-width 6 :stroke-linecap "round"))
+    svg))
+
+(defun lispm-remote--insert-mark (kind)
+  "Insert a large mark of KIND, `done' or `failed', then a line."
+  (if (lispm-remote--graphic-p)
+      (lispm-remote--insert-image (svg-image (lispm-remote--mark-svg kind) :ascent 'center)
+                                  (if (eq kind 'done) "✔" "✖"))
+    (insert (propertize (if (eq kind 'done) "✔" "✖")
+                        'face (if (eq kind 'done) 'lispm-remote-done 'lispm-remote-failed))))
+  (insert "\n\n"))
+
+(defun lispm-remote--button-svg (text primary)
+  "Return a rounded button saying TEXT: filled when PRIMARY is t, red
+and outlined when it is `danger', else outlined."
+  (let* ((palette (lispm-remote--palette))
+         (accent (plist-get palette (if (eq primary 'danger) :failed :active)))
+         (width (+ 36 (* 9 (length text))))
+         (svg (svg-create width 38)))
+    (if (eq primary t)
+        (svg-rectangle svg 1 1 (- width 2) 36 :rx 18 :fill accent)
+      (svg-rectangle svg 1 1 (- width 2) 36 :rx 18 :fill accent :fill-opacity 0.06
+                     :stroke accent :stroke-width 2))
+    (svg-text svg text :x (/ width 2) :y 24 :text-anchor "middle" :font-size 15
+              :font-family "sans-serif" :font-weight "bold"
+              :fill (if (eq primary t) "#ffffff" accent))
+    svg))
+
+(defun lispm-remote--insert-button (label key command &optional style)
+  "Insert a button LABEL running COMMAND, which KEY also runs.
+STYLE is t for the main button, `danger' for a refusal, nil otherwise."
+  (let ((text (format "%s (%s)" label key)))
+    (if (lispm-remote--graphic-p)
+        (let ((image (svg-image (lispm-remote--button-svg text style) :ascent 'center)))
+          (push image lispm-remote--images)
+          (insert-text-button text 'display image 'face nil 'follow-link t
+                              'help-echo (format "Press %s" key)
+                              'action (lambda (_) (call-interactively command))))
+      (insert-text-button (concat " " text " ") 'face 'lispm-remote-button 'follow-link t
+                          'action (lambda (_) (call-interactively command)))))
+  (insert "  "))
+
+(defun lispm-remote--network-line ()
+  "Return a line saying how the node stands on the network."
+  (let ((seeds (mapconcat (lambda (seed) (string-remove-prefix "https://" seed))
+                          lispm-remote-seeds ", ")))
+    (cond ((and lispm-remote--peers (> lispm-remote--peers 0))
+           (propertize (format "On Rings, %d %s" lispm-remote--peers
+                               (if (= lispm-remote--peers 1) "peer" "peers"))
+                       'face 'lispm-remote-done))
+          (t (propertize (format "%c Joining Rings%s"
+                                 (aref "◐◓◑◒" (% (truncate (float-time)) 4))
+                                 (if (string-empty-p seeds) "" (concat " through " seeds)))
+                         'face 'lispm-remote-active)))))
+
+(defun lispm-remote--insert-screen (offer)
+  "Insert the pairing screen for OFFER."
+  (let ((page (string-remove-suffix "/" (string-remove-prefix "https://" lispm-remote-page))))
+    (insert (propertize "Pair a device with LispM" 'face 'lispm-remote-title) "\n\n")
+    (lispm-remote--insert-steps (lispm-remote--progress offer))
+    (insert "\n")
+    (cond
+     ((plist-get offer :paired)
+      (lispm-remote--insert-mark 'done)
+      (insert (propertize (format "Paired with %s." (plist-get offer :paired)) 'face 'bold) "\n\n"
+              (if (plist-get offer :opened)
+                  (propertize "✔ Session open, LispM's state sent" 'face 'lispm-remote-done)
+                (propertize (format "%c Waiting for the device to open a session"
+                                    (aref "◐◓◑◒" (% (truncate (float-time)) 4)))
+                            'face 'lispm-remote-active))
+              "\n\nIt can reach LispM whenever Emacs runs.\n"))
+     ((plist-get offer :ended)
+      (lispm-remote--insert-mark 'failed)
+      (insert (pcase (plist-get offer :ended)
+                ('expired "The code expired.")
+                ('refused "You refused the device.")
+                ('contested "Two devices used the code, so it stopped working: someone else may have seen it.")
+                ('withdrawn "You withdrew the code.")
+                ('replaced "A newer code replaced this one.")
+                (_ "The code stopped working."))
+              "\n\n")
+      (lispm-remote--insert-button "New code" "g" #'lispm-remote-pair t)
+      (insert "\n"))
+     ((plist-get offer :fingerprint)
+      (insert (propertize (format "%s asks to pair." (plist-get offer :name)) 'face 'bold)
+              "\n\nIts screen shows\n\n  ")
+      (let ((fingerprint (plist-get offer :fingerprint)))
+        (if (lispm-remote--graphic-p)
+            (lispm-remote--insert-image (svg-image (lispm-remote--fingerprint-svg fingerprint)
+                                                   :ascent 'center)
+                                        fingerprint)
+          (insert (propertize fingerprint 'face 'lispm-remote-fingerprint))))
+      (insert "\n\nIf the device shows the same, approve it.\n\n")
+      (lispm-remote--insert-button "Approve" "a" #'lispm-remote-approve t)
+      (lispm-remote--insert-button "Refuse" "r" #'lispm-remote-refuse 'danger)
+      (insert "\n\n")
+      (lispm-remote--insert-countdown offer))
+     ((plist-get offer :token)
+      (lispm-remote--insert-code offer)
+      (insert (format "\nOpen %s on your phone or computer and scan this code.\nIt works once.\n\n"
+                      (propertize page 'face 'bold)))
+      (lispm-remote--insert-countdown offer)
+      (insert "\n" (lispm-remote--network-line) "\n"))
+     (t
+      (insert "No code yet.\n\n")
+      (lispm-remote--insert-button "New code" "g" #'lispm-remote-pair t)
+      (insert "\n")))))
+
 (defun lispm-remote--render ()
   "Show the state of pairing in its buffer, and return the buffer."
   (let ((buffer (get-buffer-create lispm-remote--buffer))
@@ -775,38 +1178,50 @@ module (8 by default), for programs that read images."
     (with-current-buffer buffer
       (unless (derived-mode-p 'lispm-remote-pair-mode)
         (lispm-remote-pair-mode))
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (replaced lispm-remote--images))
+        (setq lispm-remote--images nil)
         (erase-buffer)
-        (insert (propertize "Pair a device with LispM" 'face 'bold) "\n\n")
-        (cond
-         ((plist-get offer :paired)
-          (insert (format "Paired with %s.\n\nIt can reach LispM whenever Emacs runs.\n"
-                          (plist-get offer :paired))))
-         ((plist-get offer :ended)
-          (insert (pcase (plist-get offer :ended)
-                    ('expired "The code expired.")
-                    ('refused "You refused the device.")
-                    ('contested "Two devices used the code, so it stopped working: someone else may have seen it.")
-                    ('withdrawn "You withdrew the code.")
-                    ('replaced "A newer code replaced this one.")
-                    (_ "The code stopped working."))
-                  "\n\nPress g for a new code.\n"))
-         ((plist-get offer :fingerprint)
-          (insert (format "%s asks to pair.\n\nIts screen shows  %s\n\n"
-                          (plist-get offer :name)
-                          (propertize (plist-get offer :fingerprint) 'face 'bold))
-                  "If the device shows the same, press a to approve it, r to refuse it.\n"))
-         ((plist-get offer :token)
-          (let ((rows (lispm-remote--qr-rows)))
-            (if (and (display-graphic-p) (image-type-available-p 'svg))
-                (insert-image (create-image (lispm-remote--qr-svg rows 360) 'svg t))
-              (insert (lispm-remote--qr-text rows)))
-            (insert (format "\n\nOn your phone or computer, open %s and scan this code.\nIt works once, for %d minutes.\n"
-                            (string-remove-suffix "/" (string-remove-prefix "https://" lispm-remote-page))
-                            (max 1 (/ lispm-remote-offer-seconds 60))))))
-         (t (insert "No code yet. Press g for one.\n")))
-        (goto-char (point-min))))
+        (lispm-remote--insert-screen offer)
+        (mapc #'lispm-remote--flush replaced)
+        (goto-char (point-min)))
+      (lispm-remote--keep-ticking offer))
     buffer))
+
+(defun lispm-remote--keep-ticking (offer)
+  "Redraw the screen every second while OFFER's screen waits, and stop
+when it no longer does."
+  (cond ((and (lispm-remote--waiting-p offer) (not lispm-remote--ticker))
+         (let ((buffer (current-buffer))
+               (timer (timer-create)))
+           (timer-set-time timer (time-add nil 1) 1)
+           (timer-set-function timer #'lispm-remote--tick (list buffer timer))
+           (timer-activate timer)
+           (setq lispm-remote--ticker timer)))
+        ((and (not (lispm-remote--waiting-p offer)) lispm-remote--ticker)
+         (lispm-remote--stop-ticking))))
+
+(defun lispm-remote--stop-ticking ()
+  "Stop redrawing the pairing screen every second."
+  (when lispm-remote--ticker
+    (cancel-timer lispm-remote--ticker)
+    (setq lispm-remote--ticker nil)))
+
+(defun lispm-remote--tick (buffer timer)
+  "Redraw BUFFER's pairing screen if it shows; cancel TIMER, which calls
+this, once BUFFER is gone."
+  (if (not (buffer-live-p buffer))
+      (cancel-timer timer)
+    (with-current-buffer buffer
+      (cond ((not (lispm-remote--waiting-p lispm-remote--offer))
+             (lispm-remote--stop-ticking))
+            ((get-buffer-window buffer t)
+             (lispm-remote--render))))))
+
+(defun lispm-remote--refresh ()
+  "Redraw the pairing screen if there is one."
+  (when (get-buffer lispm-remote--buffer)
+    (lispm-remote--render)))
 
 ;;;; Devices
 
