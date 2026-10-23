@@ -35,6 +35,7 @@
 import initDevice, { generateStatic, Initiator } from "lispm-remote-web";
 import initRings, { ProcessorConfig, Provider, type ProviderListener } from "rings-node";
 import { account, delegatee } from "./account.js";
+import { expiry } from "./steps.js";
 import { Store } from "./store.js";
 
 /** The namespace LispM Remote's frames travel under on Rings. */
@@ -222,6 +223,24 @@ export class Remote {
   peers = 0;
   /** Why the last join failed, if it did. */
   joinError: string | null = null;
+  /** Joins that failed since the device last had a peer. */
+  joinAttempts = 0;
+  /** How the code being paired with came: through the camera or its link. */
+  code: "camera" | "link" | null = null;
+  /** When that code came, and when it expires, in milliseconds. */
+  codeAt: number | null = null;
+  expires: number | null = null;
+  /** How often this attempt's request to LispM went out, and whether Rings
+   * took it. */
+  sends = 0;
+  sent = false;
+  /** Whether LispM did not answer the last attempt to open a session. */
+  unanswered = false;
+  /** When the device last paired, last opened a session, and last got
+   * LispM's state on a session it opened. */
+  pairedAt = 0;
+  openedAt = 0;
+  stateAt = 0;
   /** The conversation of the agent the page follows, once it came. */
   chat: Chat | null = null;
   /** What the owner said that the conversation does not show yet. */
@@ -233,7 +252,7 @@ export class Remote {
   private askedAt = 0;
   private lastHeard = 0;
   private probeSince = 0;
-  private unanswered = false;
+  private attempt = 0;
   private stale = false;
   private joinedAt = 0;
   private watching = false;
@@ -298,6 +317,15 @@ export class Remote {
     return this.provider.address;
   }
 
+  /** The seed's host, as the owner may know it. */
+  get seed(): string {
+    try {
+      return new URL(this.options.seed).host;
+    } catch {
+      return this.options.seed;
+    }
+  }
+
   /** Whether an offer waits for the device to be on the network. */
   get waitingToPair(): boolean {
     return this.token !== null;
@@ -349,10 +377,13 @@ export class Remote {
   // --------------------------------------------------------------------
   // Pairing
 
-  /** Pairs with the offer `token`, from LispM's QR code, as soon as the
-   * device is on the network. */
-  pairWith(token: string): void {
+  /** Pairs with the offer `token`, from LispM's QR code, read by the
+   * camera or opened as its link, as soon as the device is on the network. */
+  pairWith(token: string, how: "camera" | "link"): void {
     this.token = token;
+    this.code = how;
+    this.codeAt = Date.now();
+    this.expires = expiry(token);
     this.notice = null;
     this.changed();
     void this.watch();
@@ -510,6 +541,7 @@ export class Remote {
       this.peers = peers;
       if (peers > 0) {
         this.joinError = null;
+        this.joinAttempts = 0;
         this.proceed();
       } else if (navigator.onLine !== false && Date.now() - this.joinedAt >= JOIN_GRACE_MS) {
         await this.join();
@@ -529,6 +561,7 @@ export class Remote {
       this.joinError = null;
     } catch (error) {
       this.joinError = messageOf(error);
+      this.joinAttempts++;
     }
   }
 
@@ -567,6 +600,9 @@ export class Remote {
   private step(phase: Phase, command: () => Effect[]): void {
     const before = this.phase;
     this.phase = phase;
+    this.attempt++;
+    this.sends = 0;
+    this.sent = false;
     try {
       this.apply(command());
     } catch (error) {
@@ -597,22 +633,35 @@ export class Remote {
     }
     for (const effect of effects) {
       switch (effect.type) {
-        case "transmit":
-          this.provider
-            .send_message(effect.to, NAMESPACE, effect.frame)
-            .catch((error: unknown) => console.debug("lispm-remote: sending failed:", error));
+        case "transmit": {
+          const handshake = this.phase === "pairing" || this.phase === "opening";
+          const attempt = this.attempt;
+          if (handshake) {
+            this.sends++;
+          }
+          this.provider.send_message(effect.to, NAMESPACE, effect.frame).then(
+            () => {
+              if (handshake && attempt === this.attempt && !this.sent) {
+                this.sent = true;
+                this.changed();
+              }
+            },
+            (error: unknown) => console.debug("lispm-remote: sending failed:", error),
+          );
           break;
+        }
         case "show-fingerprint":
           this.fingerprint = effect.fingerprint;
           break;
         case "paired":
           this.pairing = { responder: effect.responder, key: effect.key };
-          this.fingerprint = null;
+          this.pairedAt = Date.now();
           void this.store.put("pairing", this.pairing);
           break;
         case "unpaired":
           this.pairing = null;
           this.state = null;
+          this.code = null;
           void this.store.delete("pairing");
           this.notice = {
             tone: "error",
@@ -621,6 +670,7 @@ export class Remote {
           break;
         case "opened":
           this.phase = "open";
+          this.openedAt = Date.now();
           // A new channel follows nothing until asked.
           this.chat = null;
           this.followedAt = 0;
@@ -640,6 +690,8 @@ export class Remote {
         case "failed":
           if (this.phase === "pairing") {
             this.fingerprint = null;
+            this.code = null;
+            this.expires = null;
             this.notice = { tone: "error", text: pairingFailure(effect) };
           } else if (effect.reason === "timed-out") {
             this.unanswered = true;
@@ -674,6 +726,9 @@ export class Remote {
     this.probeSince = 0;
     switch (message.type) {
       case "state":
+        if (this.openedAt > this.stateAt) {
+          this.stateAt = Date.now();
+        }
         this.state = message.state ?? null;
         this.asking = false;
         break;

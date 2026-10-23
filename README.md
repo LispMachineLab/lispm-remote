@@ -105,7 +105,12 @@ key and its pairing in IndexedDB, with the node's replay records beside them.
 
 It reads the offer from the QR code through the camera, or from its own URL: a phone's camera app
 opens `https://lispm.ai/remote/#TOKEN`, and the page takes the token and removes it from the URL.
-While pairing it shows the fingerprint to compare with Emacs. Once paired, it lists LispM's agents,
+Pairing shows as five steps, the same Emacs shows: **Join** Rings through the seed, with its retries;
+**Scan** the code in a viewfinder, skipped when the page came from the code's link; **Reach** LispM,
+counting the requests sent; **Confirm** the fingerprint, in large type, against a bar of the time the
+code has left; **Connected**, once LispM's state arrives. Reconnecting after the network dropped, or
+after a reload, shows Join, Reach and Connected, so you see what the page waits for. Each step's
+element carries `data-step` and `data-state`, which the browser test follows. Once paired, it lists LispM's agents,
 what each is doing and how many calls wait for you; with one agent, its chat opens at once. In a
 chat, what you send shows at once, until the conversation holds it; Enter sends, Shift-Enter starts
 a new line, and an input method's Enter stays its own.
