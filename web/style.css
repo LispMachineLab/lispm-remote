@@ -1,0 +1,127 @@
+/* LispM Remote: the page around the canvas.
+   Copyright (C) 2026  Ryan.K
+   SPDX-License-Identifier: AGPL-3.0-or-later */
+
+:root {
+  --bar: #e8e8e8;
+  --line: #b8b8b8;
+  --text: #111;
+  --muted: #666;
+  --active: #fff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #fff;
+  color: var(--text);
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--bar);
+  border-bottom: 1px solid var(--line);
+  min-height: 34px;
+}
+
+#tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  flex: 1;
+  scrollbar-width: none;
+}
+
+.tab, #add {
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  padding: 3px 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab.active { background: var(--active); }
+
+.tab .close {
+  margin-left: 6px;
+  color: var(--muted);
+}
+
+#add { font-size: 16px; line-height: 1; padding: 3px 10px; }
+
+#status { color: var(--muted); white-space: nowrap; }
+
+#windows {
+  position: absolute;
+  top: 40px;
+  right: 6px;
+  max-height: 60dvh;
+  overflow-y: auto;
+  min-width: 220px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 2;
+}
+
+#windows[hidden] { display: none; }
+
+#window-list { list-style: none; margin: 0; padding: 4px; }
+
+#window-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+#window-list button:hover { background: var(--bar); }
+
+#screen {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+#canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+#canvas.bell { filter: invert(1); }
+
+/* Keeps the keyboard's focus without being seen. */
+#keys {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  resize: none;
+}

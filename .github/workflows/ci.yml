@@ -25,3 +25,19 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check -p lispm-remote-protocol --target wasm32-unknown-unknown
+
+  display:
+    name: Display
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Lint
+        run: cargo clippy -p lispm-remote-display -p lispm-remote-relay -p lispm-remote-client --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test -p lispm-remote-display -p lispm-remote-relay -p lispm-remote-client
+      - name: WebAssembly
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p lispm-remote-display --target wasm32-unknown-unknown
+          cargo clippy -p lispm-remote-client --target wasm32-unknown-unknown -- -D warnings

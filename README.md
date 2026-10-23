@@ -30,9 +30,14 @@ its input. That is what lets the tests cover every order of a pairing's events.
 |-------------------------------|--------------------------------------------------------------------|
 | `crates/protocol`             | The pairing and session state machines, native and WebAssembly     |
 | `crates/module`               | The Emacs module: a Rings node on its own threads inside Emacs     |
+| `crates/display`              | The display protocol: screens, their differences, the codec        |
+| `crates/relay`                | Emacs tty frames as display surfaces, and the clients' sessions    |
+| `crates/client`               | The display's client, a canvas in WebAssembly                      |
+| `web`                         | The page the client runs in                                        |
 | `lisp/lispm-remote-module.el` | Gets the module and loads it                                       |
 | `lisp/lispm-remote-node.el`   | The node in Lisp: start, connect, send, requests, incoming frames  |
 | `lisp/lispm-remote.el`        | LispM Remote: the QR code, approval, devices, state, reconnecting  |
+| `lisp/lispm-remote-display.el`| LispM's windows, opened by clients                                 |
 
 To come: the phone's page at lispm.ai/remote, and the browser test that scans the QR code with a
 camera feed and cuts the network.
@@ -84,10 +89,45 @@ LispM's modules are meant to be downloaded and checked against pinned checksums.
 published yet, so for now you have to choose to build it: `(setq lispm-remote-module-source 'build)`,
 or `make module`.
 
+## LispM's windows on another device
+
+A browser on a phone or another computer can show LispM's windows and work in them. Nothing is
+streamed as video: LispM sends what each cell holds and where each image goes, and the page redraws
+that on a canvas with its own fonts and images.
+
+```elisp
+(lispm-remote-display-start)   ; returns the page's URL, token included
+(lispm-remote-display-stop)
+```
+
+Each window a page opens is a tty frame of the running Emacs, made on a pseudo-terminal the module
+holds, the way `emacsclient -t` makes one on its own terminal. Emacs does all the layout and nothing
+in Emacs changes; the module reads what Emacs writes as an xterm would and keeps the page up to date.
+It answers Emacs as a recent xterm, so Emacs's own xterm support turns on what the page understands:
+the mouse, keys such as `C-;`, bracketed paste, the clipboard.
+
+- **Resources stay on the client.** An image is named by the SHA-256 of its bytes. A screen only
+  places images by name; the page draws them from its pool and asks for an image only the first time
+  it sees it, keeping it in the browser's cache from then on. The images LispM draws on a terminal
+  (Kitty's graphics protocol) become such names on the way.
+- **State, not a stream.** The module keeps each window's screen and sends a page the difference from
+  the screen the page has, so a slow page skips the states in between, and a page that loses track
+  asks for the whole screen again.
+- **Which windows.** `lispm-remote-display-windows-function` lists what a page may open (the buffers,
+  by default); `lispm-remote-display-show-function` shows an opened one in its frame.
+
+For now pages connect over a WebSocket on the local network, with the token in the URL; the display
+refuses a page without it, and pages from other sites. Rings, with the pairing above, is next. A page
+is built with `make web`, which needs the `wasm-bindgen` command of the version `crates/client` pins.
+
+What a terminal cannot show, the page does not either: text is in cells, not proportional fonts; images
+inside buffers and WebKit views are not drawn yet.
+
 ## Build and test
 
 ```sh
 make module      # the module, for this computer
+make web         # the display's page: the client in WebAssembly
 make test        # the Rust tests, then the Lisp tests on the built module
 make compile     # byte-compile the Lisp
 cargo check -p lispm-remote-protocol --target wasm32-unknown-unknown
