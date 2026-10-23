@@ -16,8 +16,10 @@
  *   page checks its peers.  With none, it joins Rings again through the
  *   seed, retrying every second: for about 5 s after the network drops, a
  *   seed still holds the device's old connection and refuses a new one
- *   ("Found existing transport").  Once back, it closes the channel it had
- *   and opens a new one, Noise KK, without scanning again.
+ *   ("Found existing transport").  A handshake of the page's own that never
+ *   finishes refuses its joins too, for three minutes; after 10 s of that
+ *   the page drops it (handshake.ts).  Once back, it closes the channel it
+ *   had and opens a new one, Noise KK, without scanning again.
  * - When LispM has said nothing for 30 s, the page asks for the state; if
  *   nothing comes within 12 s, it opens a new channel, in case Emacs
  *   restarted and forgot the old one.
@@ -35,6 +37,7 @@
 import initDevice, { generateStatic, Initiator } from "lispm-remote-web";
 import initRings, { ProcessorConfig, Provider, type ProviderListener } from "rings-node";
 import { account, delegatee } from "./account.js";
+import { type Held, holding, stuck } from "./handshake.js";
 import { expiry } from "./steps.js";
 import { Store } from "./store.js";
 
@@ -255,6 +258,7 @@ export class Remote {
   private attempt = 0;
   private stale = false;
   private joinedAt = 0;
+  private held: Held | null = null;
   private watching = false;
   private token: string | null = null;
   private readonly commands = new Map<string, Command>();
@@ -544,6 +548,7 @@ export class Remote {
       if (peers > 0) {
         this.joinError = null;
         this.joinAttempts = 0;
+        this.held = null;
         this.proceed();
       } else if (navigator.onLine !== false && Date.now() - this.joinedAt >= JOIN_GRACE_MS) {
         await this.join();
@@ -561,9 +566,28 @@ export class Remote {
       await timeout(this.provider.connect_peer_via_http(this.options.seed), JOIN_TIMEOUT_MS, "Joining");
       this.joinedAt = Date.now();
       this.joinError = null;
+      this.held = null;
     } catch (error) {
       this.joinError = messageOf(error);
       this.joinAttempts++;
+      await this.release(this.joinError);
+    }
+  }
+
+  /** After a join failed with `message`: drops the handshake refusing the
+   * page's joins, once it has for long enough. */
+  private async release(message: string): Promise<void> {
+    const now = Date.now();
+    this.held = holding(this.held, message, now);
+    if (!stuck(this.held, now)) {
+      return;
+    }
+    const { peer } = this.held;
+    this.held = null;
+    try {
+      await this.provider.disconnect(peer);
+    } catch (error) {
+      this.joinError = messageOf(error);
     }
   }
 

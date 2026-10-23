@@ -6,6 +6,7 @@
 #   make test         the Rust tests, then the Lisp tests on the built module
 #   make compile      byte-compile the Emacs Lisp, warnings failing it
 #   make page         build the phone's page into web/dist
+#   make test-page    the page's tests, on what `make page` built
 #   make serve        serve web/dist at http://localhost:8000
 #   make e2e          the browser test of the page, on Linux, with sudo
 #   make pin          pin the published modules of these sources
@@ -22,7 +23,7 @@ EMACS_BATCH = $(EMACS) -Q --batch -L lisp
 PAGE = web/dist
 RINGS = web/node_modules/@ringsnetwork/rings-node/dist
 
-.PHONY: all module display-page test test-rust test-lisp compile page serve e2e clean pin check-pins
+.PHONY: all module display-page test test-rust test-lisp test-page compile page serve e2e clean pin check-pins
 
 all: module
 
@@ -68,6 +69,9 @@ page: web/node_modules/.package-lock.json
 	cp web/pkg/lispm_remote_web.js web/pkg/lispm_remote_web_bg.wasm $(PAGE)/pkg/
 	cp web/pkg/lispm_remote_client.js web/pkg/lispm_remote_client_bg.wasm $(PAGE)/pkg/
 	cp $(RINGS)/rings_node.js $(RINGS)/rings_node_bg.wasm $(PAGE)/rings/
+
+test-page: page
+	cd web && $(NPM) test
 
 serve: page
 	$(PYTHON) -m http.server --bind 127.0.0.1 --directory $(PAGE) $(PORT)

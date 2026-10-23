@@ -18,6 +18,10 @@
 //    reach, connected.
 // 4. Reloaded, the page opens a session from what it kept, through the
 //    same steps.
+// 5. Reloaded again, the page's handshakes with the seed never finish, as
+//    one whose connection finds no path does not, and Rings refuses every
+//    join while it holds one: the page drops the one it holds and starts
+//    another.  Once they finish again, the page reconnects.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -83,6 +87,37 @@ function recordSteps() {
   }).observe(document, { subtree: true, attributes: true, attributeFilter: ["data-state"] });
 }
 
+/** Makes the page's connections never finish while sessionStorage's
+ * `e2e-stall` is "on": their offers and answers lose their ICE candidates,
+ * so neither end has an address to check.  Counts, as window.__stalled,
+ * those that got their answer, each a handshake in flight. */
+function stallConnections() {
+  window.__stalled = 0;
+  const Native = window.RTCPeerConnection;
+  const strip = (description) =>
+    description && { type: description.type, sdp: description.sdp.replace(/^a=candidate:.*\r?\n/gm, "") };
+  window.RTCPeerConnection = class extends Native {
+    constructor(...args) {
+      super(...args);
+      this.stalled = sessionStorage.getItem("e2e-stall") === "on";
+    }
+    get localDescription() {
+      const description = super.localDescription;
+      return this.stalled && description ? new RTCSessionDescription(strip(description)) : description;
+    }
+    async setRemoteDescription(description) {
+      if (!this.stalled) {
+        return super.setRemoteDescription(description);
+      }
+      await super.setRemoteDescription(strip(description));
+      window.__stalled++;
+    }
+    addIceCandidate(candidate) {
+      return this.stalled ? Promise.resolve() : super.addIceCandidate(candidate);
+    }
+  };
+}
+
 /** Whether `expected` occurs in `seen` in order, not necessarily together. */
 function inOrder(seen, expected) {
   let next = 0;
@@ -120,6 +155,7 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   await context.grantPermissions(["camera"]);
   await context.addInitScript(recordSteps);
+  await context.addInitScript(stallConnections);
   const page = await context.newPage();
   page.on("console", (message) => {
     if (message.type() === "error") {
@@ -211,6 +247,21 @@ async function main() {
     await expectSteps(["reconnect:join:done", "reconnect:connected:done"]);
     await page.locator("#pair").waitFor({ state: "hidden", timeout: 10_000 });
     log("reloaded and reconnected");
+
+    // 5. Reloaded, its handshakes never finish, until it has dropped one.
+    await lisp(`(e2e-status "after a handshake that never finished")`);
+    await page.evaluate(() => sessionStorage.setItem("e2e-stall", "on"));
+    await page.reload();
+    await page.waitForFunction(() => window.__stalled >= 1, null, { timeout: 60_000 });
+    log("a handshake is in flight that never finishes");
+    await page.waitForFunction(() => window.__stalled >= 2, null, { timeout: 60_000 });
+    log("the page dropped it and started another");
+    await page.evaluate(() => sessionStorage.setItem("e2e-stall", "off"));
+    await step("reconnect", "connected", "done").waitFor({ timeout: 120_000 });
+    await page
+      .locator(".chat-head .activity", { hasText: "after a handshake that never finished" })
+      .waitFor({ timeout: 60_000 });
+    log("reconnected after it");
   } catch (error) {
     await page.screenshot({ path: join(dir, "failure.png"), fullPage: true });
     log("status:", await status.textContent(), "| footer:", await page.locator("#about").textContent());
