@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "lispm-remote-client"
+description = "The display's client: LispM's windows redrawn on a canvas, in WebAssembly"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+lispm-remote-display = { path = "../display" }
+
+# The wasm-bindgen family moves in step; these match one release of the
+# wasm-bindgen command that binds the module (`make web`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "=0.3.98"
+wasm-bindgen = "=0.2.121"
+wasm-bindgen-futures = "=0.4.71"
+web-sys = { version = "=0.3.98", features = [
+  "AddEventListenerOptions",
+  "BinaryType",
+  "Blob",
+  "BlobPropertyBag",
+  "Cache",
+  "CacheStorage",
+  "CanvasRenderingContext2d",
+  "Clipboard",
+  "ClipboardEvent",
+  "CloseEvent",
+  "CompositionEvent",
+  "CssStyleDeclaration",
+  "DataTransfer",
+  "Document",
+  "DomRect",
+  "DomTokenList",
+  "Element",
+  "Event",
+  "EventTarget",
+  "HtmlButtonElement",
+  "HtmlCanvasElement",
+  "HtmlElement",
+  "HtmlTextAreaElement",
+  "ImageBitmap",
+  "InputEvent",
+  "KeyboardEvent",
+  "Location",
+  "MessageEvent",
+  "Navigator",
+  "Node",
+  "PointerEvent",
+  "Request",
+  "Response",
+  "TextMetrics",
+  "WebSocket",
+  "WheelEvent",
+  "Window",
+] }

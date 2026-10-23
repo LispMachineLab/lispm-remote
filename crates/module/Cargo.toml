@@ -22,7 +22,9 @@ bytes = "1"
 emacs = { version = "0.23.0", features = ["emacs-28"] }
 getrandom = "0.3"
 hex = "0.4"
+lispm-remote-display = { path = "../display" }
 lispm-remote-protocol = { path = "../protocol" }
+lispm-remote-relay = { path = "../relay" }
 qrcode = { version = "0.14", default-features = false }
 rings-core.workspace = true
 rings-node.workspace = true

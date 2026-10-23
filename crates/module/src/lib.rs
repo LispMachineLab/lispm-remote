@@ -16,10 +16,15 @@
 //!
 //! Rings's account is a secp256k1 key the shell stores; the node runs on a
 //! fresh session key that account delegates to at each start.
+//!
+//! The module also holds the display (`display`): LispM's windows drawn
+//! on tty frames whose terminals it keeps, and redrawn by clients
+//! (`lispm-remote-relay`).
 
 #![deny(missing_docs)]
 
 mod bridge;
+mod display;
 mod lisp;
 mod machines;
 pub mod node;
