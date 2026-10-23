@@ -35,6 +35,14 @@
 //! answer arrives as `Resource` chunks, which the client checks against
 //! the hash before keeping them.
 //!
+//! # On a LispM Remote channel
+//!
+//! A channel's payloads are told apart by their first byte: `0x01` starts
+//! a message of this protocol (it is the codec's version byte), `{` a JSON
+//! control message, and every other first byte is reserved.  A message is
+//! at most [`MAX_MESSAGE_LEN`] bytes, which one record carries.  Records
+//! may be lost or arrive out of order.
+//!
 //! # Shape
 //!
 //! Everything here is a value or a pure function: the screen model, the
