@@ -87,6 +87,7 @@ pub use message::Window;
 pub use resource::RESOURCE_CHUNK;
 pub use resource::ResourceId;
 pub use screen::CellRect;
+pub use screen::MAX_CELLS;
 pub use screen::Cursor;
 pub use screen::CursorShape;
 pub use screen::PixelRect;
