@@ -54,7 +54,10 @@
   (let ((directory lispm-directory))
     (add-hook 'kill-emacs-hook (lambda () (delete-directory directory t))))
   (add-to-list 'load-path lispm-remote-test--lispm-lisp)
-  (require 'lispm-runtime))
+  (require 'lispm-runtime)
+  ;; Its conversations, as LispM Remote reads them; loaded now, so that
+  ;; the variables it defines are special before the tests bind them.
+  (require 'lispm-chat))
 
 (declare-function lispm-remote-core-generate-account "lispm-remote-core")
 (declare-function lispm-remote-core-generate-static "lispm-remote-core")
@@ -247,7 +250,11 @@ owner.  Return the fingerprint the phone shows."
 (cl-defstruct (lispm-remote-test-agent (:constructor lispm-remote-test--agent-create)
                                        (:copier nil))
   "A stand-in for one of LispM's agents, when LispM is not at hand."
-  name (state 'idle) told (calls (make-hash-table :test #'equal)) decided allowed)
+  name (state 'idle) told (calls (make-hash-table :test #'equal)) decided allowed
+  items (buffer (generate-new-buffer " *stand-in session*")))
+
+(defvar lispm-remote-test--answer nil
+  "What the test's agent answers next, when it is told something.")
 
 (defvar lispm-remote-test--stand-in nil
   "The stand-in agent, when LispM is not at hand.")
@@ -346,9 +353,17 @@ for LispM, over one agent."
               ((symbol-function 'lispm-agent-pending) #'lispm-remote-test-agent-calls)
               ((symbol-function 'lispm-waiting-calls) waiting)
               ((symbol-function 'lispm-asked) #'identity)
+              ((symbol-function 'lispm-agent-buffer) #'lispm-remote-test-agent-buffer)
+              ((symbol-function 'lispm-chat-items)
+               (lambda (_buffer) (reverse (lispm-remote-test-agent-items agent))))
               ((symbol-function 'lispm-tell)
                (lambda (agent text &rest _)
                  (push text (lispm-remote-test-agent-told agent))
+                 (push (list :kind 'user :text text) (lispm-remote-test-agent-items agent))
+                 (when lispm-remote-test--answer
+                   (push (list :kind 'text :text lispm-remote-test--answer)
+                         (lispm-remote-test-agent-items agent)))
+                 (lispm-remote-test--stand-in-changed)
                  agent))
               ((symbol-function 'lispm-approve-for)
                (lambda (agent &optional id) (funcall settle agent id 'approve)))
@@ -364,7 +379,16 @@ for LispM, over one agent."
                    (user-error "%s is idle" (lispm-remote-test-agent-name agent)))
                  (setf (lispm-remote-test-agent-state agent) 'idle)
                  (lispm-remote-test--stand-in-changed))))
-      (funcall body))))
+      (unwind-protect
+          (funcall body)
+        (kill-buffer (lispm-remote-test-agent-buffer agent))))))
+
+(defun lispm-remote-test--answer-next (text)
+  "Have the agent answer TEXT when it is told something next."
+  (if lispm-remote-test--lispm-lisp
+      (setq lispm-remote-test--responses
+            (list (lispm-remote-test--reply "end_turn" `((type . "text") (text . ,text)))))
+    (setq lispm-remote-test--answer text)))
 
 (defun lispm-remote-test--ask ()
   "Have the agent ask to write a file in its project; return the call's id
@@ -684,7 +708,7 @@ tester, bound as BINDINGS says: (PHONE)."
 
 (ert-deftest lispm-remote-test-commands-need-lispm ()
   (cl-letf (((symbol-function 'lispm-get-agent) nil))
-    (let ((answer (lispm-remote--do "say" '((id . 7) (agent . "coder") (text . "hello")))))
+    (let ((answer (lispm-remote--do "peer" "channel" "say" '((id . 7) (agent . "coder") (text . "hello")))))
       (should (equal answer '((type . "error") (command . "say") (id . 7)
                               (message . "LispM is not running in this Emacs")))))))
 
@@ -696,6 +720,77 @@ tester, bound as BINDINGS says: (PHONE)."
   (let ((summary (lispm-remote--summary `((code . ,(make-string 1000 ?x))))))
     (should (= (length summary) lispm-remote--summary-length))
     (should (string-suffix-p "…" summary))))
+
+;;;; Conversations
+
+(defun lispm-remote-test--chat (phone)
+  "Return the last chat PHONE received."
+  (seq-find (lambda (message) (equal (alist-get 'type message) "chat"))
+            (lispm-remote-test-phone-states phone)))
+
+(defun lispm-remote-test--said (phone kind)
+  "Return the texts of the items of KIND in the last chat PHONE received."
+  (mapcar (lambda (item) (alist-get 'text item))
+          (seq-filter (lambda (item) (equal (alist-get 'kind item) kind))
+                      (alist-get 'items (lispm-remote-test--chat phone)))))
+
+(ert-deftest lispm-remote-test-a-phone-follows-an-agents-conversation ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (lispm-remote-test--with-agents (phone)
+    (let ((hello (concat "Hello " (string #x3bb #x4f60 #x597d) " ✓"))
+          (lispm-remote-test--answer nil))
+      (should (equal (alist-get 'type (lispm-remote-test--command
+                                       phone '((type . "watch") (agent . "tester"))))
+                     "ack"))
+      (lispm-remote-node-test--wait (lambda () (lispm-remote-test--chat phone)) "the conversation")
+      (should (equal (alist-get 'agent (lispm-remote-test--chat phone)) "tester"))
+      ;; What the phone says, and the answer, show in the conversation,
+      ;; whatever the script.
+      (lispm-remote-test--answer-next "Hi, phone.")
+      (lispm-remote-test--command phone `((type . "say") (agent . "tester") (text . ,hello)))
+      (lispm-remote-node-test--wait
+       (lambda () (and (member hello (lispm-remote-test--said phone "user"))
+                       (member "Hi, phone." (lispm-remote-test--said phone "text"))))
+       "the answer in the conversation")
+      (should (= (alist-get 'more (lispm-remote-test--chat phone)) 0))
+      ;; Nobody to follow.
+      (let ((answer (lispm-remote-test--command
+                     phone '((type . "watch") (agent . "nobody")))))
+        (should (equal (alist-get 'type answer) "error"))
+        (should (string-search "No agent is called nobody" (alist-get 'message answer))))
+      ;; Following none.
+      (should (equal (alist-get 'type (lispm-remote-test--command phone '((type . "watch"))))
+                     "ack"))
+      (should-not (lispm-remote--session-watch (car lispm-remote--sessions))))))
+
+(ert-deftest lispm-remote-test-a-conversation-is-cut-to-fit-one-record ()
+  (let* ((buffer (generate-new-buffer " *session*"))
+         (items (cl-loop for i below 100
+                         collect (list :kind (if (cl-oddp i) 'text 'user)
+                                       :text (make-string (if (= i 99) 9000 1500) ?x))))
+         (call (list :kind 'tool :name "run_shell" :state "DONE"
+                     :input '((command . "make test")) :result (make-string 2000 ?y))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'lispm-get-agent)
+                   (lambda (name &optional _noerror) (and (equal name "tester") 'tester)))
+                  ((symbol-function 'lispm-agent-buffer) (lambda (_) buffer))
+                  ((symbol-function 'lispm-chat-items) (lambda (_) (append items (list call)))))
+          (let* ((chat (lispm-remote--chat "tester"))
+                 (kept (alist-get 'items chat))
+                 (last (aref kept (1- (length kept))))
+                 (before (aref kept (- (length kept) 2))))
+            (should (<= (length kept) lispm-remote-chat-items))
+            (should (= (+ (length kept) (alist-get 'more chat)) 101))
+            (should (<= (string-bytes (json-serialize kept)) lispm-remote--chat-bytes))
+            ;; Newest last; long texts and results cut short.
+            (should (equal (alist-get 'kind last) "tool"))
+            (should (equal (alist-get 'summary last) "make test"))
+            (should (= (length (alist-get 'result last)) lispm-remote--chat-result-length))
+            (should (= (length (alist-get 'text before)) lispm-remote--chat-text-length))
+            (should (string-suffix-p "…" (alist-get 'text before))))
+          (should (equal (lispm-remote--chat "nobody")
+                         '((type . "chat") (agent . "nobody") (items . []) (more . 0)))))
+      (kill-buffer buffer))))
 
 ;;;; LispM's windows over the channel
 

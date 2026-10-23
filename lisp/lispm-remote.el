@@ -1,4 +1,4 @@
-;;; lispm-remote.el --- Reach a running LispM from your phone -*- lexical-binding: t; -*-
+;;; lispm-remote.el --- Reach a running LispM from your phone or another computer -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026  Ryan.K
 
@@ -26,14 +26,15 @@
 
 ;;; Commentary:
 
-;; LispM Remote keeps this Emacs reachable from your phone while it runs.
+;; LispM Remote keeps this Emacs reachable from your phone or another
+;; computer while it runs.
 ;; `lispm-remote-mode' starts a Rings Network node, joins the network
 ;; through `lispm-remote-seeds' and rejoins it whenever it loses every
 ;; peer.  Paired devices then reach LispM by its DID, from anywhere.
 ;;
 ;; To pair, run `lispm-remote-pair': it shows a QR code.  Open
-;; lispm.ai/remote on the phone and scan it.  Both screens then show the
-;; same fingerprint; press `a' to approve the phone, `r' to refuse it.  The
+;; lispm.ai/remote on the device and scan it.  Both screens then show the
+;; same fingerprint; press `a' to approve the device, `r' to refuse it.  The
 ;; code works once, for `lispm-remote-offer-seconds'.  `lispm-remote-devices'
 ;; lists the paired devices; `d' there forgets one.
 ;;
@@ -64,8 +65,23 @@
 ;; The "id" is the command's own, if it has one; LispM answers a command
 ;; repeated with the same id again without doing it twice, so a device may
 ;; send a command until it hears back.  Without LispM, every command is
-;; answered with an error.  Other messages from devices go to
-;; `lispm-remote-message-functions'.
+;; answered with an error.
+;;
+;; A device follows one agent's conversation at a time, as a chat:
+;;
+;;   device -> LispM   {"type": "watch", "agent": NAME}   follow NAME's conversation
+;;   device -> LispM   {"type": "watch"}                  follow none
+;;   LispM -> device   {"type": "chat", "agent": NAME, "items": [ITEM...], "more": N}
+;;
+;; LispM answers "watch" as a command, sends the conversation at once, and
+;; sends it again whenever it changes, the response streaming in included.
+;; It sends the latest items that fit one message, oldest first; N earlier
+;; ones stay in Emacs.  An item is an object with its "kind", as LispM's
+;; chat has it: "user" (with "from" when an agent or LispM wrote it),
+;; "text", "thought", "tool" (with "name", "state", a "summary" of its input
+;; and its "result"), "note", "event" or "summary".  "watch" changes
+;; nothing but what is sent, so a device sends it until a chat comes.
+;; Other messages from devices go to `lispm-remote-message-functions'.
 ;;
 ;; The keys are kept in `lispm-remote-directory', readable only by you: the
 ;; Rings account, this Emacs's static key, and the paired devices.
@@ -104,6 +120,8 @@
 (declare-function lispm-allow "lispm-runtime")
 (declare-function lispm-deny-for "lispm-runtime")
 (declare-function lispm-abort "lispm-runtime")
+(declare-function lispm-agent-buffer "lispm-core")
+(declare-function lispm-chat-items "lispm-chat")
 
 ;;;; Options
 
@@ -125,6 +143,11 @@
 (defcustom lispm-remote-check-seconds 10
   "How often LispM Remote checks the network, rejoining it when the node
 has lost every peer."
+  :type 'natnum
+  :group 'lispm-remote)
+
+(defcustom lispm-remote-chat-items 40
+  "The most items of an agent's conversation a device is sent at once."
   :type 'natnum
   :group 'lispm-remote)
 
@@ -169,8 +192,15 @@ old session and opens another.")
 (defvar lispm-remote--state-timer nil
   "The timer that sends a changed state shortly after the change.")
 
+(cl-defstruct (lispm-remote--session (:constructor lispm-remote--session-create)
+                                     (:predicate nil)
+                                     (:copier nil))
+  "An open session with a device: its PEER and CHANNEL, the STATE last sent
+to it, the agent whose conversation it WATCHes, and the CHAT last sent."
+  peer channel state watch chat)
+
 (defvar lispm-remote--sessions nil
-  "The open sessions: a list of (PEER CHANNEL . STATE-SENT).")
+  "The open sessions, newest first.")
 
 (defvar lispm-remote--answers nil
   "The answers to the latest commands that had an id: an alist of
@@ -258,6 +288,10 @@ nil when there is none."
                (signal (car error) (cdr error))))
     (lispm-remote--stop)))
 
+(defconst lispm-remote--change-hooks
+  '(lispm-state-change-functions lispm-response-delta-functions lispm-turn-end-functions)
+  "LispM's hooks that say what devices are sent may have changed.")
+
 (defun lispm-remote--start ()
   "Start the node and the machine, and join the network."
   (setq lispm-remote--node (lispm-remote-node-start nil #'lispm-remote--frame))
@@ -266,11 +300,13 @@ nil when there is none."
          (lispm-remote--static) (lispm-remote-node-did lispm-remote--node)
          (mapcar #'lispm-remote--device-vector (lispm-remote--devices))))
   (setq lispm-remote--timer (run-at-time 0 lispm-remote-check-seconds #'lispm-remote--check))
-  (add-hook 'lispm-state-change-functions #'lispm-remote-state-changed))
+  (dolist (hook lispm-remote--change-hooks)
+    (add-hook hook #'lispm-remote-state-changed)))
 
 (defun lispm-remote--stop ()
   "Stop the node and forget the sessions."
-  (remove-hook 'lispm-state-change-functions #'lispm-remote-state-changed)
+  (dolist (hook lispm-remote--change-hooks)
+    (remove-hook hook #'lispm-remote-state-changed))
   (dolist (timer (list lispm-remote--timer lispm-remote--state-timer))
     (when timer (cancel-timer timer)))
   (when lispm-remote--node
@@ -285,6 +321,7 @@ when the node has lost every peer."
   (when lispm-remote--machine
     (lispm-remote--apply (lispm-remote-core-responder-tick lispm-remote--machine))
     (lispm-remote--send-state)
+    (lispm-remote--send-chats)
     (lispm-remote-node-request
      lispm-remote--node "listPeers" nil
      (lambda (result error)
@@ -341,7 +378,7 @@ when the node has lost every peer."
         (seq-remove (lambda (device) (equal (plist-get device :peer) peer))
                     (lispm-remote--devices))))
       (`(opened ,peer ,channel)
-       (push (cons peer (cons channel nil)) lispm-remote--sessions)
+       (push (lispm-remote--session-create :peer peer :channel channel) lispm-remote--sessions)
        (lispm-remote--send-state peer channel)
        (run-hook-with-args 'lispm-remote-session-functions peer channel 'opened))
       (`(delivered ,peer ,channel ,payload)
@@ -356,7 +393,13 @@ when the node has lost every peer."
 
 (defun lispm-remote--session-p (session peer channel)
   "Return non-nil when SESSION is the channel CHANNEL of PEER."
-  (and (equal (car session) peer) (equal (cadr session) channel)))
+  (and (equal (lispm-remote--session-peer session) peer)
+       (equal (lispm-remote--session-channel session) channel)))
+
+(defun lispm-remote--session (peer channel)
+  "Return the session on the channel CHANNEL of PEER, if it is open."
+  (seq-find (lambda (session) (lispm-remote--session-p session peer channel))
+            lispm-remote--sessions))
 
 ;;;; State
 
@@ -403,36 +446,62 @@ when the node has lost every peer."
                       (summary . ,(lispm-remote--summary (plist-get asked :input))))))
                 (lispm-waiting-calls agent)))))
 
+(defun lispm-remote--send-json (peer channel json)
+  "Send JSON, a serialized object, on CHANNEL to PEER."
+  (lispm-remote--apply
+   (lispm-remote-core-responder-send lispm-remote--machine peer channel json)))
+
 (defun lispm-remote--send-message (peer channel message)
   "Send MESSAGE, JSON as `json-serialize' takes it, on CHANNEL to PEER."
-  (lispm-remote--apply
-   (lispm-remote-core-responder-send lispm-remote--machine peer channel
-                                     (json-serialize message))))
+  (lispm-remote--send-json peer channel (json-serialize message)))
+
+(defun lispm-remote--send-changed (slot make &optional peer channel)
+  "Send each session the message MAKE, a function, makes of it, unless that
+is nil, when it differs from the one the session's SLOT says was sent
+last; and to the session CHANNEL of PEER whether or not."
+  (dolist (session lispm-remote--sessions)
+    (when-let* ((message (funcall make session))
+                (json (json-serialize message))
+                ((or (lispm-remote--session-p session peer channel)
+                     (not (equal (cl-struct-slot-value 'lispm-remote--session slot session)
+                                 json)))))
+      (setf (cl-struct-slot-value 'lispm-remote--session slot session) json)
+      (condition-case error
+          (lispm-remote--send-json (lispm-remote--session-peer session)
+                                   (lispm-remote--session-channel session) json)
+        (error (lispm-remote--log "sending the %s to %s failed: %s" slot
+                                  (lispm-remote--session-peer session)
+                                  (error-message-string error)))))))
 
 (defun lispm-remote--send-state (&optional peer channel)
   "Send the state to every session it changed for since last sent, and to
 the session CHANNEL of PEER whether or not it changed."
   (when lispm-remote--sessions
-    (let* ((state (funcall lispm-remote-state-function))
-           (json (json-serialize state)))
-      (dolist (session lispm-remote--sessions)
-        (when (or (lispm-remote--session-p session peer channel)
-                  (not (equal (cddr session) json)))
-          (setcdr (cdr session) json)
-          (condition-case error
-              (lispm-remote--send-message (car session) (cadr session)
-                                          `((type . "state") (state . ,state)))
-            (error (lispm-remote--log "sending the state failed: %s"
-                                      (error-message-string error)))))))))
+    (let ((message `((type . "state") (state . ,(funcall lispm-remote-state-function)))))
+      (lispm-remote--send-changed 'state (lambda (_) message) peer channel))))
+
+(defun lispm-remote--send-chats (&optional peer channel)
+  "Send each session that watches an agent the agent's conversation, when
+it changed since last sent; to the session CHANNEL of PEER whether or not."
+  (let (chats)
+    (lispm-remote--send-changed
+     'chat
+     (lambda (session)
+       (when-let* ((agent (lispm-remote--session-watch session)))
+         (with-memoization (alist-get agent chats nil nil #'equal)
+           (lispm-remote--chat agent))))
+     peer channel)))
 
 (defun lispm-remote-state-changed (&rest _)
-  "Send the state to the devices shortly, once changes settle."
+  "Send the state and the conversations followed to the devices shortly,
+once changes settle."
   (when (and lispm-remote--sessions (not lispm-remote--state-timer))
     (setq lispm-remote--state-timer
           (run-at-time 0.3 nil (lambda ()
                                  (setq lispm-remote--state-timer nil)
                                  (when lispm-remote--machine
-                                   (lispm-remote--send-state)))))))
+                                   (lispm-remote--send-state)
+                                   (lispm-remote--send-chats)))))))
 
 (defun lispm-remote-send (peer channel payload)
   "Send PAYLOAD, a unibyte string, on the session CHANNEL of PEER.
@@ -461,27 +530,31 @@ A payload must not start with `{' unless it is a JSON message; see
     (pcase (alist-get 'type message)
       ("state?" (lispm-remote--send-state peer channel))
       ((and type (or "say" "decide" "interrupt"))
-       (lispm-remote--send-message peer channel (lispm-remote--answer peer type message)))
+       (lispm-remote--send-message peer channel (lispm-remote--answer peer channel type message)))
+      ("watch"
+       (lispm-remote--send-message peer channel (lispm-remote--do peer channel "watch" message))
+       (lispm-remote--send-chats))
       ('nil (lispm-remote--log "a message from %s is not a JSON object" peer))
       (_ (run-hook-with-args 'lispm-remote-message-functions peer channel message)))))
 
 ;;;; Commands
 
-(defun lispm-remote--answer (peer type message)
-  "Return the answer to the command MESSAGE of TYPE from PEER, doing it
-unless it repeats one already done."
+(defun lispm-remote--answer (peer channel type message)
+  "Return the answer to the command MESSAGE of TYPE from PEER on CHANNEL,
+doing it unless it repeats one already done."
   (let* ((id (alist-get 'id message))
          (key (and id (cons peer id))))
     (or (and key (cdr (assoc key lispm-remote--answers)))
-        (let ((answer (lispm-remote--do type message)))
+        (let ((answer (lispm-remote--do peer channel type message)))
           (when key
             (setq lispm-remote--answers
                   (seq-take (cons (cons key answer) lispm-remote--answers)
                             lispm-remote--answers-kept)))
           answer))))
 
-(defun lispm-remote--do (type message)
-  "Do the command MESSAGE of TYPE, and return its answer, as JSON."
+(defun lispm-remote--do (peer channel type message)
+  "Do the command MESSAGE of TYPE from PEER on CHANNEL, and return its
+answer, as JSON."
   (let ((id (and (alist-get 'id message) `((id . ,(alist-get 'id message))))))
     (condition-case error
         (progn
@@ -490,7 +563,8 @@ unless it repeats one already done."
             ("decide" (lispm-remote-decide (alist-get 'agent message) (alist-get 'call message)
                                            (alist-get 'decision message)
                                            (alist-get 'reason message)))
-            ("interrupt" (lispm-remote-interrupt (alist-get 'agent message))))
+            ("interrupt" (lispm-remote-interrupt (alist-get 'agent message)))
+            ("watch" (lispm-remote--watch peer channel (alist-get 'agent message))))
           `((type . "ack") (command . ,type) ,@id))
       (error
        `((type . "error") (command . ,type) ,@id
@@ -530,6 +604,68 @@ if given."
   "Stop the turn of LispM's AGENT, named by a string."
   (lispm-abort (lispm-remote--lispm-agent agent)))
 
+;;;; Conversations
+
+(defconst lispm-remote--chat-bytes 48000
+  "The most bytes of items one chat message holds; a record holds 65518.")
+
+(defconst lispm-remote--chat-text-length 4000
+  "The most characters of an item's text a device is sent.")
+
+(defconst lispm-remote--chat-result-length 600
+  "The most characters of a call's result a device is sent.")
+
+(defun lispm-remote--watch (peer channel name)
+  "Have the session CHANNEL of PEER follow the conversation of LispM's
+agent NAME, a string, or none when NAME is nil; send it again in full."
+  (when name
+    (lispm-remote--lispm-agent name))
+  (when-let* ((session (lispm-remote--session peer channel)))
+    (setf (lispm-remote--session-watch session) name
+          (lispm-remote--session-chat session) nil)))
+
+(defun lispm-remote--clip (text length)
+  "Return TEXT, cut to LENGTH characters with an ellipsis if longer."
+  (if (> (length text) length)
+      (concat (substring text 0 (1- length)) "…")
+    text))
+
+(defun lispm-remote--chat-item (item)
+  "Return ITEM of a conversation, as `lispm-chat-items' gives it, as JSON."
+  (let ((text (plist-get item :text))
+        (result (plist-get item :result)))
+    `((kind . ,(format "%s" (plist-get item :kind)))
+      ,@(and (stringp text)
+             `((text . ,(lispm-remote--clip (substring-no-properties text)
+                                            lispm-remote--chat-text-length))))
+      ,@(and (plist-get item :from) `((from . ,(format "%s" (plist-get item :from)))))
+      ,@(and (plist-get item :name) `((name . ,(format "%s" (plist-get item :name)))))
+      ,@(and (plist-get item :state) `((state . ,(format "%s" (plist-get item :state)))))
+      ,@(and (plist-member item :input)
+             `((summary . ,(lispm-remote--summary (plist-get item :input)))))
+      ,@(and (stringp result)
+             `((result . ,(lispm-remote--clip (substring-no-properties result)
+                                              lispm-remote--chat-result-length))))
+      ,@(and (plist-get item :failed) '((failed . t))))))
+
+(defun lispm-remote--chat (name)
+  "Return the conversation of LispM's agent NAME as a chat message: its
+latest items that fit one message."
+  (let* ((agent (and (fboundp 'lispm-get-agent) (lispm-get-agent name t)))
+         (buffer (and agent (lispm-agent-buffer agent)))
+         (items (and (buffer-live-p buffer)
+                     (or (fboundp 'lispm-chat-items) (require 'lispm-chat nil t))
+                     (mapcar #'lispm-remote--chat-item (lispm-chat-items buffer))))
+         (kept nil)
+         (bytes 0))
+    (cl-loop for item in (reverse items)
+             for size = (string-bytes (json-serialize item))
+             while (and (< (length kept) lispm-remote-chat-items)
+                        (<= (+ bytes size) lispm-remote--chat-bytes))
+             do (push item kept) (cl-incf bytes size))
+    `((type . "chat") (agent . ,name) (items . ,(vconcat kept))
+      (more . ,(- (length items) (length kept))))))
+
 ;;;; Pairing
 
 (defun lispm-remote--require-mode ()
@@ -539,7 +675,7 @@ if given."
 
 ;;;###autoload
 (defun lispm-remote-pair ()
-  "Show a QR code a phone pairs with LispM by."
+  "Show a QR code a device pairs with LispM by."
   (interactive)
   (lispm-remote--require-mode)
   (lispm-remote--apply (lispm-remote-core-responder-offer lispm-remote--machine
@@ -580,7 +716,7 @@ FINGERPRINT, when given, must be the one the device shows."
   "q" #'lispm-remote-withdraw)
 
 (define-derived-mode lispm-remote-pair-mode special-mode "LispM Remote"
-  "Mode of the buffer a phone pairs with LispM in."
+  "Mode of the buffer a device pairs with LispM in."
   (setq-local cursor-type nil))
 
 (defun lispm-remote--qr-rows ()
@@ -641,7 +777,7 @@ module (8 by default), for programs that read images."
         (lispm-remote-pair-mode))
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (propertize "Pair a phone with LispM" 'face 'bold) "\n\n")
+        (insert (propertize "Pair a device with LispM" 'face 'bold) "\n\n")
         (cond
          ((plist-get offer :paired)
           (insert (format "Paired with %s.\n\nIt can reach LispM whenever Emacs runs.\n"
@@ -659,13 +795,13 @@ module (8 by default), for programs that read images."
           (insert (format "%s asks to pair.\n\nIts screen shows  %s\n\n"
                           (plist-get offer :name)
                           (propertize (plist-get offer :fingerprint) 'face 'bold))
-                  "If your phone shows the same, press a to approve it, r to refuse it.\n"))
+                  "If the device shows the same, press a to approve it, r to refuse it.\n"))
          ((plist-get offer :token)
           (let ((rows (lispm-remote--qr-rows)))
             (if (and (display-graphic-p) (image-type-available-p 'svg))
                 (insert-image (create-image (lispm-remote--qr-svg rows 360) 'svg t))
               (insert (lispm-remote--qr-text rows)))
-            (insert (format "\n\nOn your phone, open %s and scan this code.\nIt works once, for %d minutes.\n"
+            (insert (format "\n\nOn your phone or computer, open %s and scan this code.\nIt works once, for %d minutes.\n"
                             (string-remove-suffix "/" (string-remove-prefix "https://" lispm-remote-page))
                             (max 1 (/ lispm-remote-offer-seconds 60))))))
          (t (insert "No code yet. Press g for one.\n")))
