@@ -73,7 +73,7 @@
                                        (:copier nil))
   "A phone: a Rings node and the device's machine, with what it saw."
   account secret store node machine timer pairing fingerprint states failures
-  unpaired send-errors asking asked-at displays)
+  unpaired send-errors asking asked-at displays reopen)
 
 (defun lispm-remote-test--phone-start (phone)
   "Start PHONE's node with its account, and its machine from its stored
@@ -105,6 +105,9 @@ again while none came since the channel opened, as the page does."
   (when (lispm-remote-node-live-p (lispm-remote-test-phone-node phone))
     (let ((machine (lispm-remote-test-phone-machine phone)))
       (lispm-remote-test--phone-apply phone (lispm-remote-core-initiator-tick machine))
+      (when (lispm-remote-test-phone-reopen phone)
+        (setf (lispm-remote-test-phone-reopen phone) nil)
+        (lispm-remote-test--phone-apply phone (lispm-remote-core-initiator-connect machine)))
       (when (and (lispm-remote-test-phone-asking phone)
                  (lispm-remote-core-initiator-open-p machine)
                  (< (or (lispm-remote-test-phone-asked-at phone) 0) (- (float-time) 2)))
@@ -141,7 +144,13 @@ again while none came since the channel opened, as the page does."
                                   :object-type 'alist :array-type 'list)
                (lispm-remote-test-phone-states phone))))
       (`(failed . ,why)
-       (push why (lispm-remote-test-phone-failures phone))))))
+       (push why (lispm-remote-test-phone-failures phone))
+       ;; A session that could not open in time is tried again while the
+       ;; phone is paired, as the page does: the network may have lost
+       ;; every request of that try.
+       (when (and (equal why '(timed-out))
+                  (lispm-remote-test-phone-pairing phone))
+         (setf (lispm-remote-test-phone-reopen phone) t))))))
 
 (defun lispm-remote-test--last-state (phone)
   "Return the last state PHONE received."
