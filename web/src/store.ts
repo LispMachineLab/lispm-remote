@@ -42,7 +42,7 @@ export class Store {
     const opening = indexedDB.open(DATABASE, 1);
     opening.onupgradeneeded = () => opening.result.createObjectStore(STORE);
     const db = await result(opening);
-    // Losing the replay records would get the phone refused by Rings, and
+    // Losing the replay records would get the device refused by Rings, and
     // losing the keys would unpair it.
     void navigator.storage?.persist?.();
     return new Store(db);

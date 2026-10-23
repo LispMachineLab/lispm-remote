@@ -1,12 +1,12 @@
-// lispm-remote: the phone's side of LispM Remote.
+// lispm-remote: the device's side of LispM Remote.
 //
 // Copyright (C) 2026  Ryan.K
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * The page's shell around the device's machine (crates/web): a Rings node
- * of the phone's own, the machine's effects carried out, and the loops that
- * keep the phone in touch with LispM.
+ * of the device's own, the machine's effects carried out, and the loops that
+ * keep the device in touch with LispM.
  *
  * - Every 0.5 s the machine ticks, so a frame waiting for its answer goes
  *   again and a phase waiting too long gives up.  After a channel opens,
@@ -15,7 +15,7 @@
  * - Every 1 s, and on the browser's `online` and `offline` events, the
  *   page checks its peers.  With none, it joins Rings again through the
  *   seed, retrying every second: for about 5 s after the network drops, a
- *   seed still holds the phone's old connection and refuses a new one
+ *   seed still holds the device's old connection and refuses a new one
  *   ("Found existing transport").  Once back, it closes the channel it had
  *   and opens a new one, Noise KK, without scanning again.
  * - When LispM has said nothing for 30 s, the page asks for the state; if
@@ -25,6 +25,11 @@
  * Commands to LispM carry an `id` and are sent again every 2 s until LispM
  * answers with an `ack` or `error` of that id; LispM answers a repeated id
  * without acting on it twice.
+ *
+ * The page follows one agent's conversation at a time: it sends `watch`
+ * every 2 s until LispM sends the agent's `chat`, which LispM then sends
+ * again whenever the conversation changes.  What the owner sent shows at
+ * once, until the conversation holds it.
  */
 
 import initDevice, { generateStatic, Initiator } from "lispm-remote-web";
@@ -57,11 +62,11 @@ export interface Options {
   readonly seed: string;
   /** ICE servers, as Rings writes them: `stun://host:port;...`. */
   readonly ice: string;
-  /** What LispM's owner sees this phone called. */
+  /** What LispM's owner sees this device called. */
   readonly name: string;
 }
 
-/** The LispM this phone paired with, as the machine's `paired` effect gave it. */
+/** The LispM this device paired with, as the machine's `paired` effect gave it. */
 export interface Pairing {
   readonly responder: string;
   readonly key: string;
@@ -84,6 +89,33 @@ export interface Agent {
   readonly approvals?: readonly Approval[];
 }
 
+/** One item of an agent's conversation, as LispM's chat has it. */
+export interface ChatItem {
+  readonly kind: "user" | "text" | "thought" | "tool" | "note" | "event" | "summary" | string;
+  readonly text?: string;
+  readonly from?: string;
+  readonly name?: string;
+  readonly state?: string;
+  readonly summary?: string;
+  readonly result?: string;
+  readonly failed?: boolean;
+}
+
+/** The latest part of an agent's conversation; `more` earlier items stay
+ * in Emacs. */
+export interface Chat {
+  readonly agent: string;
+  readonly items: readonly ChatItem[];
+  readonly more: number;
+}
+
+/** Something the owner said that the conversation does not show yet. */
+export interface Outgoing {
+  readonly id: string;
+  readonly agent: string;
+  readonly text: string;
+}
+
 /** LispM's state, as `lispm-remote-state-function' returns it. */
 export interface LispmState {
   readonly emacs?: string;
@@ -96,7 +128,7 @@ export interface Notice {
   readonly text: string;
 }
 
-/** Where the phone stands. */
+/** Where the device stands. */
 export type Phase = "idle" | "pairing" | "opening" | "open";
 
 /** An answer to "how is it going", for the page's status line. */
@@ -162,7 +194,7 @@ function randomId(): string {
 function pairingFailure(effect: { reason: string; detail?: string }): string {
   switch (effect.detail ?? effect.reason) {
     case "owner-refused":
-      return "LispM's owner refused this phone.";
+      return "LispM's owner refused this device.";
     case "offer-unavailable":
       return "This code no longer works. Show a new one in Emacs with M-x lispm-remote-pair.";
     case "contested":
@@ -176,9 +208,9 @@ function pairingFailure(effect: { reason: string; detail?: string }): string {
   }
 }
 
-/** The phone's side of LispM Remote. */
+/** The device's side of LispM Remote. */
 export class Remote {
-  /** Where the phone stands with LispM. */
+  /** Where the device stands with LispM. */
   phase: Phase = "idle";
   /** The fingerprint to compare while pairing. */
   fingerprint: string | null = null;
@@ -190,7 +222,13 @@ export class Remote {
   peers = 0;
   /** Why the last join failed, if it did. */
   joinError: string | null = null;
+  /** The conversation of the agent the page follows, once it came. */
+  chat: Chat | null = null;
+  /** What the owner said that the conversation does not show yet. */
+  outbox: Outgoing[] = [];
 
+  private following: string | null = null;
+  private followedAt = 0;
   private asking = false;
   private askedAt = 0;
   private lastHeard = 0;
@@ -212,7 +250,7 @@ export class Remote {
     private readonly changed: () => void,
   ) {}
 
-  /** Starts the phone: its keys, its node, its machine and its loops.
+  /** Starts the device: its keys, its node, its machine and its loops.
    * `changed` is called whenever what the page shows may have changed. */
   static async start(options: Options, changed: () => void): Promise<Remote> {
     await Promise.all([initDevice(), initRings()]);
@@ -229,7 +267,7 @@ export class Remote {
       await delegatee(await account(store)),
       STABILIZE_SECONDS,
     );
-    // The replay records go to IndexedDB under this name: a phone that
+    // The replay records go to IndexedDB under this name: a device that
     // reloads must not start its message sequences over, or Rings refuses
     // it ("Transaction sequence 0 forks").
     const provider = (await Provider.new_provider_with_storage(
@@ -255,12 +293,12 @@ export class Remote {
     return remote;
   }
 
-  /** This phone's DID on Rings. */
+  /** This device's DID on Rings. */
   get did(): string {
     return this.provider.address;
   }
 
-  /** Whether an offer waits for the phone to be on the network. */
+  /** Whether an offer waits for the device to be on the network. */
   get waitingToPair(): boolean {
     return this.token !== null;
   }
@@ -312,7 +350,7 @@ export class Remote {
   // Pairing
 
   /** Pairs with the offer `token`, from LispM's QR code, as soon as the
-   * phone is on the network. */
+   * device is on the network. */
   pairWith(token: string): void {
     this.token = token;
     this.notice = null;
@@ -320,7 +358,7 @@ export class Remote {
     void this.watch();
   }
 
-  /** Forgets the paired LispM on this phone. */
+  /** Forgets the paired LispM on this device. */
   async forget(): Promise<void> {
     if (this.machine.openP()) {
       this.apply(this.machine.close());
@@ -337,7 +375,28 @@ export class Remote {
 
   /** Gives the agent `agent` the input `text`. */
   say(agent: string, text: string): void {
-    this.command({ type: "say", agent, text }, `Sent to ${agent}`);
+    const id = this.command({ type: "say", agent, text }, `Sent to ${agent}`);
+    if (id) {
+      this.outbox.push({ id, agent, text });
+      this.changed();
+    }
+  }
+
+  /** Follows the conversation of `agent`, or none. */
+  follow(agent: string | null): void {
+    if (agent === this.following) {
+      return;
+    }
+    const was = this.following;
+    // Before sending: sending draws the page, which follows again.
+    this.following = agent;
+    this.followedAt = 0;
+    if (this.chat?.agent !== agent) {
+      this.chat = null;
+    }
+    if (was && !agent && this.phase === "open") {
+      this.send({ type: "watch" });
+    }
   }
 
   /** Answers the call `call` that `agent` waits on. */
@@ -351,19 +410,33 @@ export class Remote {
     this.command({ type: "interrupt", agent }, `Stopped ${agent}`);
   }
 
-  private command(message: Record<string, unknown>, what: string): void {
+  /** Sends the command `message` until LispM answers; returns its id, or
+   * null when there is no channel to send it on. */
+  private command(message: Record<string, unknown>, what: string): string | null {
     if (this.phase !== "open") {
       this.notice = { tone: "error", text: "Not connected to LispM." };
       this.changed();
-      return;
+      return null;
     }
     const now = Date.now();
     const command: Command = { message: { ...message, id: randomId() }, what, since: now, sentAt: now };
     this.commands.set(command.message.id, command);
     this.send(command.message);
+    return command.message.id;
   }
 
-  private answered(message: { type: string; id?: string; message?: string }): void {
+  private answered(message: { type: string; id?: string; command?: string; message?: string }): void {
+    if (message.command === "watch") {
+      if (message.type === "error") {
+        this.notice = { tone: "error", text: message.message ?? "LispM has no such agent." };
+        this.following = null;
+      }
+      return;
+    }
+    if (message.type === "error" && message.id !== undefined) {
+      const failed = message.id;
+      this.outbox = this.outbox.filter((outgoing) => outgoing.id !== failed);
+    }
     const command = message.id === undefined ? undefined : this.commands.get(message.id);
     if (message.id !== undefined && !command) {
       return; // An answer to a repeat.
@@ -402,9 +475,14 @@ export class Remote {
       this.askedAt = now;
       this.send({ type: "state?" });
     }
+    if (this.following && this.chat?.agent !== this.following && now - this.followedAt >= ASK_MS) {
+      this.followedAt = now;
+      this.send({ type: "watch", agent: this.following });
+    }
     for (const [id, command] of this.commands) {
       if (now - command.since >= GIVE_UP_MS) {
         this.commands.delete(id);
+        this.outbox = this.outbox.filter((outgoing) => outgoing.id !== id);
         this.notice = { tone: "error", text: `LispM did not answer: ${command.what.toLowerCase()}?` };
         this.changed();
       } else if (now - command.sentAt >= RETRY_MS) {
@@ -538,11 +616,14 @@ export class Remote {
           void this.store.delete("pairing");
           this.notice = {
             tone: "error",
-            text: "LispM no longer knows this phone. Scan a new code to pair again.",
+            text: "LispM no longer knows this device. Scan a new code to pair again.",
           };
           break;
         case "opened":
           this.phase = "open";
+          // A new channel follows nothing until asked.
+          this.chat = null;
+          this.followedAt = 0;
           this.unanswered = false;
           this.asking = true;
           this.askedAt = 0;
@@ -574,7 +655,16 @@ export class Remote {
   }
 
   private heard(payload: Uint8Array): void {
-    let message: { type?: unknown; state?: LispmState; id?: string; message?: string };
+    let message: {
+      type?: unknown;
+      state?: LispmState;
+      id?: string;
+      command?: string;
+      message?: string;
+      agent?: string;
+      items?: ChatItem[];
+      more?: number;
+    };
     try {
       message = JSON.parse(new TextDecoder().decode(payload));
     } catch {
@@ -587,9 +677,20 @@ export class Remote {
         this.state = message.state ?? null;
         this.asking = false;
         break;
+      case "chat":
+        if (message.agent === this.following && message.agent !== undefined) {
+          const chat: Chat = { agent: message.agent, items: message.items ?? [], more: message.more ?? 0 };
+          this.chat = chat;
+          this.outbox = this.outbox.filter(
+            (outgoing) =>
+              outgoing.agent !== chat.agent ||
+              !chat.items.some((item) => item.kind === "user" && item.text === outgoing.text),
+          );
+        }
+        break;
       case "ack":
       case "error":
-        this.answered(message as { type: string; id?: string; message?: string });
+        this.answered(message as { type: string; id?: string; command?: string; message?: string });
         break;
     }
   }

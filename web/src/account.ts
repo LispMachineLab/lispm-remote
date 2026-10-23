@@ -1,14 +1,14 @@
-// lispm-remote: the phone's Rings account.
+// lispm-remote: the device's Rings account.
 //
 // Copyright (C) 2026  Ryan.K
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The phone's own Rings account: a P-256 key pair made by WebCrypto, its
+ * The device's own Rings account: a P-256 key pair made by WebCrypto, its
  * private half not extractable, so it never leaves the browser.  Rings
- * derives the phone's DID from the public half (account type
+ * derives the device's DID from the public half (account type
  * `secp256r1`), and the node runs on a session key this account delegates
- * to at each start, as LispM's node does with its own account.  The phone
+ * to at each start, as LispM's node does with its own account.  The device
  * never borrows LispM's account: a node's DID is its account's.
  */
 
@@ -20,7 +20,7 @@ const P256: EcKeyGenParams = { name: "ECDSA", namedCurve: "P-256" };
 /** The order of P-256's base point. */
 const ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 
-/** The phone's account: its key pair, and the public key as Rings names it. */
+/** The device's account: its key pair, and the public key as Rings names it. */
 export interface Account {
   readonly keys: CryptoKeyPair;
   /** The public key's coordinates x ‖ y, in hexadecimal. */
