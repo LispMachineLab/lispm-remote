@@ -14,10 +14,14 @@
  *   a state arrives.
  * - Every 1 s, and on the browser's `online` and `offline` events, the
  *   page checks its peers.  With none, it joins Rings again through the
- *   seed, retrying every second: for about 5 s after the network drops, a
- *   seed still holds the device's old connection and refuses a new one
- *   ("Found existing transport").  Once back, it closes the channel it had
- *   and opens a new one, Noise KK, without scanning again.
+ *   seed, retrying every second at first: for about 5 s after the network
+ *   drops, a seed still holds the device's old connection and refuses a
+ *   new one ("Found existing transport").  Joins that keep failing are
+ *   spaced out (`joinDelay`), so that a page left alone does not hammer the
+ *   seed, which turns away addresses that ask too often; the `online`
+ *   event and the page coming back into view try again at once.  Once
+ *   back, it closes the channel it had and opens a new one, Noise KK,
+ *   without scanning again.
  * - When LispM has said nothing for 30 s, the page asks for the state; if
  *   nothing comes within 12 s, it opens a new channel, in case Emacs
  *   restarted and forgot the old one.
@@ -56,6 +60,15 @@ const GIVE_UP_MS = 20_000;
 const JOIN_TIMEOUT_MS = 20_000;
 /** How long a join that succeeded may take to show a connected peer. */
 const JOIN_GRACE_MS = 5_000;
+
+/** How long to wait before joining again after `failures` joins failed in
+ * a row, in milliseconds: every second while a seed may still hold the old
+ * connection, then less and less often, never more than four times a
+ * minute; a fifth either way, at random, so that pages do not ask in step. */
+export function joinDelay(failures: number, random: () => number = Math.random): number {
+  const base = failures < 10 ? 1_000 : failures < 30 ? 2_000 : failures < 60 ? 5_000 : 15_000;
+  return base === 1_000 ? base : Math.round(base * (0.8 + 0.4 * random()));
+}
 
 /** What the page is configured with: the URL, or defaults. */
 export interface Options {
@@ -225,6 +238,8 @@ export class Remote {
   joinError: string | null = null;
   /** Joins that failed since the device last had a peer. */
   joinAttempts = 0;
+  /** When the page joins again, in milliseconds since the epoch. */
+  nextJoinAt = 0;
   /** How the code being paired with came: through the camera or its link. */
   code: "camera" | "link" | null = null;
   /** When that code came, and when it expires, in milliseconds. */
@@ -343,7 +358,15 @@ export class Remote {
     setInterval(() => void this.watch(), WATCH_MS);
     addEventListener("online", () => {
       this.lost();
+      this.joinNow();
       void this.watch();
+    });
+    // A phone that wakes the page wants it back on the network at once.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && this.peers === 0) {
+        this.joinNow();
+        void this.watch();
+      }
     });
     addEventListener("offline", () => this.lost());
     void this.watch();
@@ -544,8 +567,13 @@ export class Remote {
       if (peers > 0) {
         this.joinError = null;
         this.joinAttempts = 0;
+        this.nextJoinAt = 0;
         this.proceed();
-      } else if (navigator.onLine !== false && Date.now() - this.joinedAt >= JOIN_GRACE_MS) {
+      } else if (
+        navigator.onLine !== false &&
+        Date.now() - this.joinedAt >= JOIN_GRACE_MS &&
+        Date.now() >= this.nextJoinAt
+      ) {
         await this.join();
       }
     } catch (error) {
@@ -564,7 +592,14 @@ export class Remote {
     } catch (error) {
       this.joinError = messageOf(error);
       this.joinAttempts++;
+      this.nextJoinAt = Date.now() + joinDelay(this.joinAttempts);
     }
+  }
+
+  /** Joins at the next look, as at first, without waiting out the delay. */
+  private joinNow(): void {
+    this.joinAttempts = 0;
+    this.nextJoinAt = 0;
   }
 
   /** The network went away: what the channel had may be lost. */

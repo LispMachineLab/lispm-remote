@@ -45,6 +45,8 @@ export interface Situation {
   readonly peers: number;
   /** Joins that failed since the device last had a peer. */
   readonly joinAttempts: number;
+  /** When the page joins again, in milliseconds. */
+  readonly nextJoinAt: number;
   /** The seed's host. */
   readonly seed: string;
   /** The camera is looking for the code. */
@@ -99,7 +101,9 @@ function join(s: Situation): Step {
     return step("join", "failed", "This device is offline; it joins again once it has a network");
   }
   const trying = s.joinAttempts > 0 ? `still trying, ${s.joinAttempts}` : "joining";
-  return step("join", "active", `Through ${s.seed}: ${trying}`, "busy");
+  const wait = s.nextJoinAt - s.now;
+  const again = wait > 1_500 ? ` · again in ${Math.ceil(wait / 1000)} s` : "";
+  return step("join", "active", `Through ${s.seed}: ${trying}${again}`, "busy");
 }
 
 function scan(s: Situation): Step {
