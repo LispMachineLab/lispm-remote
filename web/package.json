@@ -1,0 +1,17 @@
+{
+  "name": "lispm-remote-page",
+  "version": "0.1.0",
+  "description": "The phone's page of LispM Remote",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ringsnetwork/rings-node": "git+https://github.com/RingsNetwork/rings.git#v0.34.2"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
