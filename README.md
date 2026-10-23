@@ -40,8 +40,7 @@ its input. That is what lets the tests cover every order of a pairing's events.
 | `lisp/lispm-remote.el`        | LispM Remote: the QR code, approval, devices, state, commands      |
 | `lisp/lispm-remote-display.el`| LispM's windows, opened by clients                                 |
 | `web/`                        | The page, served at lispm.ai/remote                                |
-
-To come: the browser test that scans the QR code with a camera feed and cuts the network.
+| `test/e2e/`                   | The browser test: a camera scanning the code, a network cut        |
 
 ## Pairing a device
 
@@ -199,6 +198,7 @@ make test          # the Rust tests, then the Lisp tests on the built module
 make compile       # byte-compile the Lisp
 make page          # the page
 make display-page  # the display's development page: the client in WebAssembly
+make e2e           # the browser test, on Linux, with sudo
 cargo check -p lispm-remote-protocol --target wasm32-unknown-unknown
 ```
 
@@ -206,6 +206,15 @@ The tests start Rings nodes on this computer and connect them over WebRTC by pas
 answer between them directly, so they need no seed node. The tests of the device's commands use
 LispM when it is checked out beside this repository (`../lisp_machine`, or `$LISPM_LISP`, the
 directory of its Lisp), with a scripted model, and stand-ins for its functions otherwise.
+
+The browser test runs the page in Playwright's Chromium against an Emacs running LispM Remote
+(`test/e2e/run.sh`). The camera is Chromium's fake one, playing the QR code Emacs writes. The page
+scans it, both ends show the same fingerprint, Emacs approves it, and the device talks to an agent.
+Then the browser's network goes down: Chromium runs in a Linux network namespace of its own, and
+`ip link` cuts it. LispM's state changes meanwhile; once the link is back, the page joins Rings again
+and shows the new state, without scanning, and once more after a reload. A relay node in that Emacs
+answers as the seed, under a name Chromium maps to it, since Rings refuses seeds at private
+addresses.
 
 ## License
 

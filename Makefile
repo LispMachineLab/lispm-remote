@@ -7,6 +7,7 @@
 #   make compile      byte-compile the Emacs Lisp, warnings failing it
 #   make page         build the phone's page into web/dist
 #   make serve        serve web/dist at http://localhost:8000
+#   make e2e          the browser test of the page, on Linux, with sudo
 
 EMACS ?= emacs
 CARGO ?= cargo
@@ -19,7 +20,7 @@ EMACS_BATCH = $(EMACS) -Q --batch -L lisp
 PAGE = web/dist
 RINGS = web/node_modules/@ringsnetwork/rings-node/dist
 
-.PHONY: all module display-page test test-rust test-lisp compile page serve clean
+.PHONY: all module display-page test test-rust test-lisp compile page serve e2e clean
 
 all: module
 
@@ -68,6 +69,13 @@ page: web/node_modules/.package-lock.json
 
 serve: page
 	$(PYTHON) -m http.server --bind 127.0.0.1 --directory $(PAGE) $(PORT)
+
+# Playwright's Chromium in a network namespace of its own, which needs root.
+test/e2e/node_modules/.package-lock.json: test/e2e/package.json test/e2e/package-lock.json
+	cd test/e2e && $(NPM) ci --no-audit --no-fund && npx playwright install chromium
+
+e2e: module page test/e2e/node_modules/.package-lock.json
+	sudo test/e2e/run.sh
 
 clean:
 	$(CARGO) clean
