@@ -68,6 +68,7 @@
 (declare-function lispm-remote-core-initiator-send "lispm-remote-core")
 (declare-function lispm-remote-core-initiator-tick "lispm-remote-core")
 (declare-function lispm-remote-core-initiator-open-p "lispm-remote-core")
+(declare-function lispm-remote-core-initiator-close "lispm-remote-core")
 
 (cl-defstruct (lispm-remote-test-phone (:constructor lispm-remote-test--phone-create)
                                        (:copier nil))
@@ -659,6 +660,7 @@ tester, bound as BINDINGS says: (PHONE)."
 (ert-deftest lispm-remote-test-the-screen-reads-the-same-in-a-terminal ()
   (skip-unless (lispm-remote-node-test--module-p))
   (let ((lispm-remote--offer (list :token "AQID" :expires (+ (float-time) 90)))
+        (lispm-remote--view 'pair)
         (lispm-remote--peers 1)
         (lispm-remote-offer-seconds 120))
     (unwind-protect
@@ -679,7 +681,8 @@ tester, bound as BINDINGS says: (PHONE)."
 
 (ert-deftest lispm-remote-test-the-screen-stops-ticking-once-paired ()
   (let ((lispm-remote--offer (list :token "AQID" :expires (+ (float-time) 90)
-                                   :fingerprint "4F2A-91C0" :name "Phone")))
+                                   :fingerprint "4F2A-91C0" :name "Phone"))
+        (lispm-remote--view 'pair))
     (unwind-protect
         (with-current-buffer (lispm-remote--render)
           (should (string-search "4F2A-91C0" (buffer-string)))
@@ -690,6 +693,50 @@ tester, bound as BINDINGS says: (PHONE)."
           (should-not lispm-remote--ticker)
           (should (string-search "Paired with Phone" (buffer-string))))
       (kill-buffer lispm-remote--buffer))))
+
+;;;; Home
+
+(ert-deftest lispm-remote-test-home-says-it-is-off-and-lists-no-device ()
+  (let ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
+        (lispm-remote--view 'home))
+    (unwind-protect
+        (with-current-buffer (lispm-remote--render)
+          (should (derived-mode-p 'lispm-remote-home-mode))
+          (should (string-search "○ Off: no device can reach LispM" (buffer-string)))
+          (should (string-search "Turn on (t)" (buffer-string)))
+          (should (string-search "None yet." (buffer-string)))
+          (should (string-search "Pair a device (p)" (buffer-string)))
+          (should-not lispm-remote--ticker))
+      (kill-buffer lispm-remote--buffer)
+      (delete-directory lispm-remote-directory t))))
+
+(ert-deftest lispm-remote-test-home-follows-pairing-and-sessions ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (lispm-remote-test--with-world (_relay phone)
+    (lispm-remote)
+    (with-current-buffer lispm-remote--buffer
+      (should (derived-mode-p 'lispm-remote-home-mode))
+      (should (string-search "Turn off (t)" (buffer-string)))
+      (should (string-search (lispm-remote-node-did lispm-remote--node) (buffer-string))))
+    ;; Pairing takes the window over, and q brings home back.
+    (let ((fingerprint (lispm-remote-test--claim phone)))
+      (with-current-buffer lispm-remote--buffer
+        (should (derived-mode-p 'lispm-remote-pair-mode)))
+      (lispm-remote-approve fingerprint))
+    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-states phone))
+                                  "state after pairing")
+    (lispm-remote-withdraw)
+    (with-current-buffer lispm-remote--buffer
+      (should (derived-mode-p 'lispm-remote-home-mode))
+      (should (string-search "Test Phone" (buffer-string)))
+      (should (string-search "● connected" (buffer-string))))
+    ;; The phone goes; home says so once its session closes.
+    (lispm-remote-test--phone-apply
+     phone (lispm-remote-core-initiator-close (lispm-remote-test-phone-machine phone)))
+    (lispm-remote-node-test--wait
+     (lambda () (with-current-buffer lispm-remote--buffer
+                  (string-search "○ not connected" (buffer-string))))
+     "home to see the phone go")))
 
 (ert-deftest lispm-remote-test-a-phone-sees-approvals-and-answers-them ()
   (skip-unless (lispm-remote-node-test--module-p))

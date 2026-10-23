@@ -221,7 +221,10 @@ session, and the drawing of the code, :rows and :image.")
 before the first check.")
 
 (defconst lispm-remote--buffer "*LispM Remote*"
-  "The buffer pairing is shown in.")
+  "The buffer LispM Remote's window shows: its home, or pairing.")
+
+(defvar lispm-remote--view 'home
+  "What LispM Remote's window shows: `home' or `pair'.")
 
 (defconst lispm-remote--log-buffer " *lispm-remote log*"
   "The buffer LispM Remote notes what it discarded and what failed in.")
@@ -301,6 +304,8 @@ nil when there is none."
 
 (defun lispm-remote--start ()
   "Start the node and the machine, and join the network."
+  ;; A paired device opens LispM's windows over its session.
+  (require 'lispm-remote-display nil t)
   (setq lispm-remote--node (lispm-remote-node-start nil #'lispm-remote--frame))
   (setq lispm-remote--machine
         (lispm-remote-core-responder
@@ -381,7 +386,8 @@ changed; with REJOIN, join the network again when there are none."
        (lispm-remote--render))
       (`(ask-owner ,name ,fingerprint)
        (setq lispm-remote--offer (plist-put (plist-put lispm-remote--offer :name name)
-                                            :fingerprint fingerprint))
+                                            :fingerprint fingerprint)
+             lispm-remote--view 'pair)
        (lispm-remote--render)
        (message "LispM Remote: %s asks to pair, showing %s" name fingerprint))
       (`(offer-ended ,reason)
@@ -400,13 +406,15 @@ changed; with REJOIN, join the network again when there are none."
       (`(forgotten ,peer)
        (lispm-remote--save-devices
         (seq-remove (lambda (device) (equal (plist-get device :peer) peer))
-                    (lispm-remote--devices))))
+                    (lispm-remote--devices)))
+       (lispm-remote--refresh))
       (`(opened ,peer ,channel)
        (push (lispm-remote--session-create :peer peer :channel channel) lispm-remote--sessions)
        (lispm-remote--send-state peer channel)
-       (when (equal peer (plist-get lispm-remote--offer :paired-peer))
-         (setq lispm-remote--offer (plist-put lispm-remote--offer :opened t))
-         (lispm-remote--render))
+       (if (equal peer (plist-get lispm-remote--offer :paired-peer))
+           (progn (setq lispm-remote--offer (plist-put lispm-remote--offer :opened t))
+                  (lispm-remote--render))
+         (lispm-remote--refresh))
        (run-hook-with-args 'lispm-remote-session-functions peer channel 'opened))
       (`(delivered ,peer ,channel ,payload)
        (lispm-remote--receive peer channel payload))
@@ -414,6 +422,7 @@ changed; with REJOIN, join the network again when there are none."
        (setq lispm-remote--sessions
              (seq-remove (lambda (session) (lispm-remote--session-p session peer channel))
                          lispm-remote--sessions))
+       (lispm-remote--refresh)
        (run-hook-with-args 'lispm-remote-session-functions peer channel 'closed))
       (`(discarded ,from ,why)
        (lispm-remote--log "discarded a frame from %s: %s" from why)))))
@@ -705,6 +714,7 @@ latest items that fit one message."
   "Show a QR code a device pairs with LispM by."
   (interactive)
   (lispm-remote--require-mode)
+  (setq lispm-remote--view 'pair)
   (lispm-remote--apply (lispm-remote-core-responder-offer lispm-remote--machine
                                                           lispm-remote-offer-seconds))
   (lispm-remote--check-peers)
@@ -728,13 +738,14 @@ FINGERPRINT, when given, must be the one the device shows."
   (lispm-remote--apply (lispm-remote-core-responder-refuse lispm-remote--machine)))
 
 (defun lispm-remote-withdraw ()
-  "Stop the pairing code working, and close its window."
+  "Stop the pairing code working, and go back to LispM Remote's home."
   (interactive)
   (when (and lispm-remote--machine lispm-remote--offer
              (not (plist-get lispm-remote--offer :ended))
              (not (plist-get lispm-remote--offer :paired)))
     (lispm-remote--apply (lispm-remote-core-responder-withdraw lispm-remote--machine)))
-  (quit-window))
+  (setq lispm-remote--view 'home)
+  (lispm-remote--render))
 
 (defvar-keymap lispm-remote-pair-mode-map
   :doc "Keys of the pairing buffer."
@@ -1176,16 +1187,24 @@ STYLE is t for the main button, `danger' for a refusal, nil otherwise."
   (let ((buffer (get-buffer-create lispm-remote--buffer))
         (offer lispm-remote--offer))
     (with-current-buffer buffer
-      (unless (derived-mode-p 'lispm-remote-pair-mode)
-        (lispm-remote-pair-mode))
+      (let ((mode (if (eq lispm-remote--view 'pair) #'lispm-remote-pair-mode
+                    #'lispm-remote-home-mode)))
+        (unless (eq major-mode mode)
+          ;; A new major mode drops the buffer's locals, the timer's too.
+          (lispm-remote--stop-ticking)
+          (let ((replaced lispm-remote--images))
+            (funcall mode)
+            (mapc #'lispm-remote--flush replaced))))
       (let ((inhibit-read-only t)
             (replaced lispm-remote--images))
         (setq lispm-remote--images nil)
         (erase-buffer)
-        (lispm-remote--insert-screen offer)
+        (if (eq lispm-remote--view 'pair)
+            (lispm-remote--insert-screen offer)
+          (lispm-remote--insert-home))
         (mapc #'lispm-remote--flush replaced)
         (goto-char (point-min)))
-      (lispm-remote--keep-ticking offer))
+      (lispm-remote--keep-ticking (and (eq lispm-remote--view 'pair) offer)))
     buffer))
 
 (defun lispm-remote--keep-ticking (offer)
@@ -1219,9 +1238,109 @@ this, once BUFFER is gone."
              (lispm-remote--render))))))
 
 (defun lispm-remote--refresh ()
-  "Redraw the pairing screen if there is one."
+  "Redraw LispM Remote's window if there is one."
   (when (get-buffer lispm-remote--buffer)
     (lispm-remote--render)))
+
+;;;; Home
+
+(defvar-keymap lispm-remote-home-mode-map
+  :doc "Keys of LispM Remote's home."
+  "p" #'lispm-remote-pair
+  "d" #'lispm-remote-devices
+  "t" #'lispm-remote-toggle
+  "w" #'lispm-remote-show-windows
+  "g" #'lispm-remote)
+
+(define-derived-mode lispm-remote-home-mode special-mode "LispM Remote"
+  "Mode of LispM Remote's home: how it stands, and the paired devices."
+  (setq-local cursor-type nil
+              left-margin-width 2)
+  (add-hook 'kill-buffer-hook #'lispm-remote--stop-ticking nil t))
+
+;;;###autoload
+(defun lispm-remote ()
+  "Open LispM Remote: whether devices can reach LispM, the paired
+devices, and pairing another."
+  (interactive)
+  (setq lispm-remote--view 'home)
+  (when lispm-remote-mode
+    (lispm-remote--check-peers))
+  (pop-to-buffer (lispm-remote--render)))
+
+(defun lispm-remote-toggle ()
+  "Turn `lispm-remote-mode' off when it is on, and on when it is off."
+  (interactive)
+  (lispm-remote-mode (if lispm-remote-mode -1 1))
+  (lispm-remote--refresh))
+
+(defun lispm-remote--local-display-p ()
+  "Return non-nil when this checkout has the display's own page built,
+for browsers on this computer's network."
+  (and (require 'lispm-remote-display nil t)
+       (fboundp 'lispm-remote-display-web-directory)
+       (file-directory-p (expand-file-name "pkg" (lispm-remote-display-web-directory)))))
+
+(declare-function lispm-remote-display-start "lispm-remote-display")
+(declare-function lispm-remote-display-web-directory "lispm-remote-display")
+
+(defun lispm-remote-show-windows ()
+  "Serve LispM's windows to browsers on this computer's network, and copy
+the page's URL.  Paired devices need none of this: they open LispM's
+windows from their page."
+  (interactive)
+  (unless (lispm-remote--local-display-p)
+    (user-error "This LispM Remote has no page for browsers on the network; paired devices open LispM's windows from lispm.ai/remote"))
+  (call-interactively #'lispm-remote-display-start))
+
+(defun lispm-remote--device-sessions (peer)
+  "Return how many sessions the device PEER has open."
+  (seq-count (lambda (session) (equal (lispm-remote--session-peer session) peer))
+             lispm-remote--sessions))
+
+(defun lispm-remote--insert-device (device)
+  "Insert a line for the paired DEVICE, with a button forgetting it."
+  (let* ((peer (plist-get device :peer))
+         (sessions (lispm-remote--device-sessions peer)))
+    (insert "  " (propertize (plist-get device :name) 'face 'bold)
+            (propertize (format-time-string "  paired %F %R" (/ (plist-get device :paired-at) 1000.0))
+                        'face 'lispm-remote-pending)
+            "  "
+            (if (> sessions 0)
+                (propertize "● connected" 'face 'lispm-remote-done)
+              (propertize "○ not connected" 'face 'lispm-remote-pending))
+            "  ")
+    (insert-text-button "Forget" 'face 'link 'follow-link t
+                        'help-echo (format "Forget %s" (plist-get device :name))
+                        'action (lambda (_)
+                                  (when (yes-or-no-p (format "Forget %s? " (plist-get device :name)))
+                                    (lispm-remote-forget peer))))
+    (insert "\n")))
+
+(defun lispm-remote--insert-home ()
+  "Insert LispM Remote's home."
+  (insert (propertize "LispM Remote" 'face 'lispm-remote-title) "\n\n")
+  (if lispm-remote-mode
+      (progn
+        (insert (lispm-remote--network-line) "    ")
+        (lispm-remote--insert-button "Turn off" "t" #'lispm-remote-toggle)
+        (insert "\n" (propertize (format "This Emacs is %s on Rings"
+                                          (lispm-remote-node-did lispm-remote--node))
+                                  'face 'lispm-remote-pending)))
+    (insert (propertize "○ Off: no device can reach LispM" 'face 'lispm-remote-pending) "    ")
+    (lispm-remote--insert-button "Turn on" "t" #'lispm-remote-toggle t))
+  (insert "\n\n" (propertize "Paired devices" 'face 'bold) "\n\n")
+  (if-let* ((devices (lispm-remote--devices)))
+      (mapc #'lispm-remote--insert-device devices)
+    (insert (propertize "  None yet." 'face 'lispm-remote-pending) "\n"))
+  (insert "\n")
+  (lispm-remote--insert-button "Pair a device" "p" #'lispm-remote-pair t)
+  (when (lispm-remote--local-display-p)
+    (lispm-remote--insert-button "Windows on this network" "w" #'lispm-remote-show-windows))
+  (insert "\n\n"
+          (propertize "A paired phone or computer opens lispm.ai/remote to talk to LispM's agents and\nwork in its windows, from anywhere, while this Emacs runs."
+                      'face 'lispm-remote-pending)
+          "\n"))
 
 ;;;; Devices
 

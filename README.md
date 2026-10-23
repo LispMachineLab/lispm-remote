@@ -44,6 +44,10 @@ its input. That is what lets the tests cover every order of a pairing's events.
 
 ## Pairing a device
 
+`M-x lispm-remote` opens LispM Remote's window. It shows whether devices can reach LispM, with
+a button that turns it on or off (`t`), and the paired devices, each marked connected or not, with a
+Forget button. From there, `p` pairs another device.
+
 `M-x lispm-remote-pair` turns on `lispm-remote-mode` and shows the pairing screen. It walks through
 the same steps as the device's page, **Join, Scan, Reach, Confirm, Connected**, so you can follow
 one pairing on either screen.
