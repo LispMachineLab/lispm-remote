@@ -17,9 +17,10 @@
  *   seed, retrying every second at first: for about 5 s after the network
  *   drops, a seed still holds the device's old connection and refuses a
  *   new one ("Found existing transport").  Joins that keep failing are
- *   spaced out (`joinDelay`), so that a page left alone does not hammer the
- *   seed, which turns away addresses that ask too often; the `online`
- *   event and the page coming back into view try again at once.  Once
+ *   spaced out (join.ts), so that a page left alone does not hammer the
+ *   seed, and more so when the seed answers but turns the page away, as
+ *   one that rate-limits its address does; the `online` event and the page
+ *   coming back into view try again at once.  Once
  *   back, it closes the channel it had and opens a new one, Noise KK,
  *   without scanning again.
  * - When LispM has said nothing for 30 s, the page asks for the state; if
@@ -39,6 +40,7 @@
 import initDevice, { generateStatic, Initiator } from "lispm-remote-web";
 import initRings, { ProcessorConfig, Provider, type ProviderListener } from "rings-node";
 import { account, delegatee } from "./account.js";
+import { type JoinFailure, joinDelay, rateLimited, unseen } from "./join.js";
 import { expiry } from "./steps.js";
 import { Store } from "./store.js";
 
@@ -60,15 +62,6 @@ const GIVE_UP_MS = 20_000;
 const JOIN_TIMEOUT_MS = 20_000;
 /** How long a join that succeeded may take to show a connected peer. */
 const JOIN_GRACE_MS = 5_000;
-
-/** How long to wait before joining again after `failures` joins failed in
- * a row, in milliseconds: every second while a seed may still hold the old
- * connection, then less and less often, never more than four times a
- * minute; a fifth either way, at random, so that pages do not ask in step. */
-export function joinDelay(failures: number, random: () => number = Math.random): number {
-  const base = failures < 10 ? 1_000 : failures < 30 ? 2_000 : failures < 60 ? 5_000 : 15_000;
-  return base === 1_000 ? base : Math.round(base * (0.8 + 0.4 * random()));
-}
 
 /** What the page is configured with: the URL, or defaults. */
 export interface Options {
@@ -240,6 +233,8 @@ export class Remote {
   joinAttempts = 0;
   /** When the page joins again, in milliseconds since the epoch. */
   nextJoinAt = 0;
+  /** Of those failed joins, how many the seed turned away. */
+  joinRefusals = 0;
   /** How the code being paired with came: through the camera or its link. */
   code: "camera" | "link" | null = null;
   /** When that code came, and when it expires, in milliseconds. */
@@ -567,6 +562,7 @@ export class Remote {
       if (peers > 0) {
         this.joinError = null;
         this.joinAttempts = 0;
+        this.joinRefusals = 0;
         this.nextJoinAt = 0;
         this.proceed();
       } else if (
@@ -592,13 +588,35 @@ export class Remote {
     } catch (error) {
       this.joinError = messageOf(error);
       this.joinAttempts++;
-      this.nextJoinAt = Date.now() + joinDelay(this.joinAttempts);
+      if ((await this.failure(this.joinError)) === "refused") {
+        this.joinRefusals++;
+      }
+      this.nextJoinAt = Date.now() + joinDelay(this.joinAttempts, this.joinRefusals);
+    }
+  }
+
+  /** Why the join failed with `message`.  A request the browser does not
+   * show an answer to is asked once more, without CORS: if the seed answers
+   * that, it is there and turns the page away. */
+  private async failure(message: string): Promise<JoinFailure> {
+    if (rateLimited(message)) {
+      return "refused";
+    }
+    if (!unseen(message) || navigator.onLine === false) {
+      return "network";
+    }
+    try {
+      await timeout(fetch(this.options.seed, { mode: "no-cors", cache: "no-store" }), 5_000, "Asking the seed");
+      return "refused";
+    } catch {
+      return "network";
     }
   }
 
   /** Joins at the next look, as at first, without waiting out the delay. */
   private joinNow(): void {
     this.joinAttempts = 0;
+    this.joinRefusals = 0;
     this.nextJoinAt = 0;
   }
 
