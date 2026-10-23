@@ -554,7 +554,8 @@ tester, bound as BINDINGS says: (PHONE)."
   (skip-unless (lispm-remote-node-test--module-p))
   (lispm-remote-test--with-world (relay phone)
     (lispm-remote-approve (lispm-remote-test--claim phone))
-    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-pairing phone)))
+    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-pairing phone))
+                                  "pairing on the phone")
     (lispm-remote-forget (lispm-remote-node-did (lispm-remote-test-phone-node phone)))
     (should-not (lispm-remote--devices))
     ;; The phone comes back and is told it is no longer paired.
@@ -564,7 +565,14 @@ tester, bound as BINDINGS says: (PHONE)."
     (lispm-remote-node-test--connect (lispm-remote-test-phone-node phone) relay)
     (lispm-remote-test--phone-apply
      phone (lispm-remote-core-initiator-connect (lispm-remote-test-phone-machine phone)))
-    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-unpaired phone)))
+    (ert-info ((lambda ()
+                 (format "phone failures: %S\nphone send errors: %S\nLispM log:\n%s"
+                         (lispm-remote-test-phone-failures phone)
+                         (lispm-remote-test-phone-send-errors phone)
+                         (with-current-buffer (get-buffer-create lispm-remote--log-buffer)
+                           (buffer-string)))))
+      (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-unpaired phone))
+                                    "refusal of the forgotten phone"))
     (should-not (lispm-remote-test-phone-pairing phone))))
 
 (ert-deftest lispm-remote-test-keys-are-kept-private ()
