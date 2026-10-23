@@ -140,6 +140,21 @@ vectors for arrays."
 a device that LispM Remote does not answer itself.  MESSAGE is the JSON
 object, parsed into an alist.")
 
+(defvar lispm-remote-payload-functions nil
+  "Abnormal hook run with PEER, CHANNEL and PAYLOAD for each payload from
+a device that is not a JSON message.  PAYLOAD is a unibyte string.  The
+first function that returns non-nil takes it.
+
+A payload is told apart by its first byte: `{' starts a JSON message,
+1 a message of LispM's display protocol (lispm-remote-display.el), and
+every other first byte is reserved.  Send payloads with
+`lispm-remote-send'.")
+
+(defvar lispm-remote-session-functions nil
+  "Abnormal hook run with PEER, CHANNEL and `opened' or `closed' as a
+device's session opens or closes.  A device that comes back closes its
+old session and opens another.")
+
 ;;;; The mode's state
 
 (defvar lispm-remote--node nil
@@ -327,13 +342,15 @@ when the node has lost every peer."
                     (lispm-remote--devices))))
       (`(opened ,peer ,channel)
        (push (cons peer (cons channel nil)) lispm-remote--sessions)
-       (lispm-remote--send-state peer channel))
+       (lispm-remote--send-state peer channel)
+       (run-hook-with-args 'lispm-remote-session-functions peer channel 'opened))
       (`(delivered ,peer ,channel ,payload)
        (lispm-remote--receive peer channel payload))
       (`(closed ,peer ,channel ,_reason)
        (setq lispm-remote--sessions
              (seq-remove (lambda (session) (lispm-remote--session-p session peer channel))
-                         lispm-remote--sessions)))
+                         lispm-remote--sessions))
+       (run-hook-with-args 'lispm-remote-session-functions peer channel 'closed))
       (`(discarded ,from ,why)
        (lispm-remote--log "discarded a frame from %s: %s" from why)))))
 
@@ -417,8 +434,25 @@ the session CHANNEL of PEER whether or not it changed."
                                  (when lispm-remote--machine
                                    (lispm-remote--send-state)))))))
 
+(defun lispm-remote-send (peer channel payload)
+  "Send PAYLOAD, a unibyte string, on the session CHANNEL of PEER.
+A payload must not start with `{' unless it is a JSON message; see
+`lispm-remote-payload-functions'."
+  (unless lispm-remote--machine
+    (error "LispM Remote is off"))
+  (lispm-remote--apply
+   (lispm-remote-core-responder-send lispm-remote--machine peer channel payload)))
+
 (defun lispm-remote--receive (peer channel payload)
   "Act on PAYLOAD, which PEER sent on CHANNEL."
+  (if (and (> (length payload) 0) (/= (aref payload 0) ?{))
+      (unless (run-hook-with-args-until-success 'lispm-remote-payload-functions
+                                                peer channel payload)
+        (lispm-remote--log "nobody takes a payload from %s starting with %d" peer (aref payload 0)))
+    (lispm-remote--receive-json peer channel payload)))
+
+(defun lispm-remote--receive-json (peer channel payload)
+  "Act on PAYLOAD, a JSON message PEER sent on CHANNEL."
   (let ((message (condition-case nil
                      (json-parse-string (decode-coding-string payload 'utf-8)
                                         :object-type 'alist :array-type 'list

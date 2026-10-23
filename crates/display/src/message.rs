@@ -7,6 +7,7 @@
 //!
 //! ```text
 //!   client                                  LispM
+//!     → Hello                                 start showing LispM's windows
 //!     ← Windows [w…]                          what can be opened
 //!     → Open w size cell
 //!     ← Opened s w size
@@ -18,7 +19,12 @@
 //!     ← Resource r total offset bytes …       its bytes, in chunks
 //!     → Resync s                              its copy is lost: base=0 again
 //!     → Close s  /  ← Closed s
+//!     → Bye                                   stop: send nothing more
 //! ```
+//!
+//! Over a WebSocket the connection says hello and goodbye itself; over a
+//! LispM Remote channel, which also carries other messages, `Hello` and
+//! `Bye` start and end the display's session.
 
 use crate::input::Input;
 use crate::resource::ResourceId;
@@ -210,4 +216,8 @@ pub enum ClientMessage {
         /// The resource.
         id: ResourceId,
     },
+    /// The client starts showing LispM's windows.
+    Hello,
+    /// The client stops showing them: send it nothing more.
+    Bye,
 }

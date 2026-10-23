@@ -34,8 +34,13 @@
 ;; changes; the module reads what Emacs writes and keeps clients up to
 ;; date with it.
 ;;
-;;   M-x lispm-remote-display-start    serve the display; show and copy its URL
-;;   M-x lispm-remote-display-stop     close its frames and stop
+;; Clients come two ways.  A phone paired with LispM Remote
+;; (lispm-remote.el) opens LispM's windows from its page over its
+;; channel, while `lispm-remote-display-over-remote' allows it.  A browser
+;; on this computer or its network opens the display's own page:
+;;
+;;   M-x lispm-remote-display-start    serve that page; show and copy its URL
+;;   M-x lispm-remote-display-stop     close the display's frames and stop
 ;;
 ;; Which windows a client may open is up to
 ;; `lispm-remote-display-windows-function' (the buffers, by default), and
@@ -49,9 +54,15 @@
 (require 'lispm-remote-module)
 
 (declare-function lispm-remote-core-display-start "lispm-remote-core")
+(declare-function lispm-remote-core-display-serve "lispm-remote-core")
 (declare-function lispm-remote-core-display-stop "lispm-remote-core")
 (declare-function lispm-remote-core-display-live-p "lispm-remote-core")
+(declare-function lispm-remote-core-display-serving-p "lispm-remote-core")
 (declare-function lispm-remote-core-display-url "lispm-remote-core")
+(declare-function lispm-remote-core-display-attach "lispm-remote-core")
+(declare-function lispm-remote-core-display-deliver "lispm-remote-core")
+(declare-function lispm-remote-core-display-detach "lispm-remote-core")
+(declare-function lispm-remote-send "lispm-remote")
 (declare-function lispm-remote-core-display-open "lispm-remote-core")
 (declare-function lispm-remote-core-display-close "lispm-remote-core")
 (declare-function lispm-remote-core-display-windows "lispm-remote-core")
@@ -65,6 +76,13 @@ reach the display from a phone on the same network, give an address
 that network sees, such as \"0.0.0.0:7681\"; the page's URL carries a
 token, and the display refuses anyone without it."
   :type 'string
+  :group 'lispm-remote)
+
+(defcustom lispm-remote-display-over-remote t
+  "Whether phones paired with LispM Remote may open LispM's windows.
+A paired phone is one its owner approved; it already sees LispM's
+agents and can answer them."
+  :type 'boolean
   :group 'lispm-remote)
 
 (defcustom lispm-remote-display-terminal-type "xterm-256color"
@@ -100,6 +118,10 @@ It is called with the new frame and the window's NAME.")
 
 (defvar lispm-remote-display-clients 0
   "How many clients are connected.")
+
+(defvar lispm-remote-display--channels nil
+  "The clients on LispM Remote's channels: an alist of
+\((PEER . CHANNEL) . CLIENT), CLIENT the module's number for it.")
 
 ;;;; Windows
 
@@ -137,26 +159,16 @@ It is called with the new frame and the window's NAME.")
 ;;;; Starting and stopping
 
 (defun lispm-remote-display-live-p ()
-  "Return non-nil when the display is serving."
+  "Return non-nil when the display runs."
   (and lispm-remote-display--handle
        (lispm-remote-core-display-live-p lispm-remote-display--handle)))
 
 (defun lispm-remote-display-web-directory ()
-  "Return the directory the client page is served from."
+  "Return the directory the display's own page is served from."
   (expand-file-name "crates/client/page" lispm-remote-module-root))
 
-(defun lispm-remote-display-url ()
-  "Return the URL of the display's page, token included."
-  (unless (lispm-remote-display-live-p)
-    (user-error "LispM's display is not running"))
-  (lispm-remote-core-display-url lispm-remote-display--handle))
-
-(defun lispm-remote-display-start ()
-  "Serve LispM's display, and return its URL.
-Interactively, show the URL and copy it: opening it in a browser shows
-LispM's windows there.  The URL carries the display's token, so give it
-only to your own devices."
-  (interactive)
+(defun lispm-remote-display--ensure ()
+  "Start the display unless it runs: the module's hub, without a page."
   (unless (lispm-remote-display-live-p)
     (lispm-remote-module-load)
     ;; A pipe process makes a buffer named as it is; the space hides it.
@@ -164,30 +176,47 @@ only to your own devices."
                     :name " lispm-remote-display" :noquery t :coding 'binary
                     :filter (lambda (_process _output) (lispm-remote-display--collect)))))
       (condition-case error
-          (setq lispm-remote-display--handle
-                (lispm-remote-core-display-start
-                 lispm-remote-display-address (lispm-remote-display-web-directory) process))
+          (setq lispm-remote-display--handle (lispm-remote-core-display-start process))
         (error (delete-process process)
                (signal (car error) (cdr error))))
       (setq lispm-remote-display--process process)
       (add-hook 'buffer-list-update-hook #'lispm-remote-display--offer-soon)
       (add-hook 'delete-frame-functions #'lispm-remote-display--frame-deleted)
       (add-hook 'kill-emacs-hook #'lispm-remote-display-stop)
-      (lispm-remote-display--offer)))
-  (let ((url (lispm-remote-display-url)))
+      (lispm-remote-display--offer))))
+
+(defun lispm-remote-display-url ()
+  "Return the URL of the display's own page, token included."
+  (unless (and (lispm-remote-display-live-p)
+               (lispm-remote-core-display-serving-p lispm-remote-display--handle))
+    (user-error "LispM's display serves no page"))
+  (lispm-remote-core-display-url lispm-remote-display--handle))
+
+(defun lispm-remote-display-start ()
+  "Serve LispM's display on its own page, and return the page's URL.
+Interactively, show the URL and copy it: opening it in a browser shows
+LispM's windows there.  The URL carries the display's token, so give it
+only to your own devices.  A phone paired with LispM Remote needs none
+of this; see `lispm-remote-display-over-remote'."
+  (interactive)
+  (lispm-remote-display--ensure)
+  (let ((url (lispm-remote-core-display-serve lispm-remote-display--handle
+                                              lispm-remote-display-address
+                                              (lispm-remote-display-web-directory))))
     (when (called-interactively-p 'interactive)
       (kill-new url)
       (message "LispM's display: %s (copied)" url))
     url))
 
 (defun lispm-remote-display-stop ()
-  "Delete the display's frames and stop serving."
+  "Delete the display's frames and stop it."
   (interactive)
   (dolist (entry lispm-remote-display--frames)
     (when (frame-live-p (cdr entry))
       (let ((delete-frame-functions nil))
         (delete-frame (cdr entry) t))))
-  (setq lispm-remote-display--frames nil)
+  (setq lispm-remote-display--frames nil
+        lispm-remote-display--channels nil)
   (when lispm-remote-display--handle
     ;; The module stops writing before its pipe goes: a write to a closed
     ;; pipe raises SIGPIPE, which ends a batch Emacs.
@@ -202,6 +231,46 @@ only to your own devices."
   (remove-hook 'buffer-list-update-hook #'lispm-remote-display--offer-soon)
   (remove-hook 'delete-frame-functions #'lispm-remote-display--frame-deleted)
   (setq lispm-remote-display-clients 0))
+
+;;;; Clients on LispM Remote's channels
+
+(defun lispm-remote-display--payload (peer channel payload)
+  "Take PAYLOAD from PEER's CHANNEL when it is a display message.
+A session's first message attaches a client for it, so a phone that
+never opens LispM's windows costs nothing."
+  (when (and (> (length payload) 0) (= (aref payload 0) 1))
+    (when lispm-remote-display-over-remote
+      (lispm-remote-display--ensure)
+      (let* ((key (cons peer channel))
+             (client (cdr (assoc key lispm-remote-display--channels))))
+        ;; A client whose session ended (it said goodbye) is attached anew.
+        (unless (and client (lispm-remote-core-display-deliver
+                             lispm-remote-display--handle client payload))
+          (setq client (lispm-remote-core-display-attach lispm-remote-display--handle))
+          (setf (alist-get key lispm-remote-display--channels nil nil #'equal) client)
+          (lispm-remote-core-display-deliver lispm-remote-display--handle client payload))))
+    t))
+
+(defun lispm-remote-display--session (peer channel event)
+  "Detach the client of PEER's CHANNEL when that session closes (EVENT)."
+  (when (eq event 'closed)
+    (let ((key (cons peer channel)))
+      (when-let* ((client (cdr (assoc key lispm-remote-display--channels))))
+        (when (lispm-remote-display-live-p)
+          (lispm-remote-core-display-detach lispm-remote-display--handle client))
+        (setq lispm-remote-display--channels
+              (seq-remove (lambda (entry) (equal (car entry) key))
+                          lispm-remote-display--channels))))))
+
+(defun lispm-remote-display--send (client payload)
+  "Send PAYLOAD to the channel client CLIENT, if its session is open."
+  (when-let* ((entry (rassq client lispm-remote-display--channels)))
+    (condition-case error
+        (lispm-remote-send (car (car entry)) (cdr (car entry)) payload)
+      (error (message "LispM's display: %s" (error-message-string error))))))
+
+(add-hook 'lispm-remote-payload-functions #'lispm-remote-display--payload)
+(add-hook 'lispm-remote-session-functions #'lispm-remote-display--session)
 
 ;;;; Frames
 
@@ -268,9 +337,11 @@ display's frames would never change."
   "Act on the requests clients left."
   (when (lispm-remote-display-live-p)
     (dolist (request (lispm-remote-core-display-requests lispm-remote-display--handle))
-      ;; A frame is made from a timer, not inside the process filter:
-      ;; making it asks the terminal questions and waits for the answers.
-      (run-at-time 0 nil #'lispm-remote-display--act request))))
+      (pcase request
+        (`(send ,client ,payload) (lispm-remote-display--send client payload))
+        ;; A frame is made from a timer, not inside the process filter:
+        ;; making it asks the terminal questions and waits for the answers.
+        (_ (run-at-time 0 nil #'lispm-remote-display--act request))))))
 
 (defun lispm-remote-display--act (request)
   "Act on REQUEST, which a client left."

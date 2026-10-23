@@ -322,6 +322,8 @@ impl ClientMessage {
             }),
             Self::Resync { surface } => encode_tagged(6, |out| surface.put(out)),
             Self::Want { id } => encode_tagged(7, |out| id.put(out)),
+            Self::Hello => encode_tagged(8, |_| {}),
+            Self::Bye => encode_tagged(9, |_| {}),
         }
     }
 
@@ -360,6 +362,8 @@ impl ClientMessage {
                 7 => Self::Want {
                     id: ResourceId::get(input)?,
                 },
+                8 => Self::Hello,
+                9 => Self::Bye,
                 tag => {
                     return Err(CodecError::Tag {
                         what: "message",

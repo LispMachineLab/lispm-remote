@@ -296,6 +296,8 @@ fn client_message() -> impl Strategy<Value = ClientMessage> {
         any::<[u8; 32]>().prop_map(|hash| ClientMessage::Want {
             id: ResourceId::from_hash(hash)
         }),
+        Just(ClientMessage::Hello),
+        Just(ClientMessage::Bye),
     ]
 }
 
