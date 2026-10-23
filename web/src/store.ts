@@ -1,0 +1,70 @@
+// lispm-remote: what the page keeps.
+//
+// Copyright (C) 2026  Ryan.K
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * The page keeps three things in the IndexedDB database "lispm-remote":
+ * its Rings account ("account", a WebCrypto key pair whose private half
+ * cannot be read out), its static secret ("static", hexadecimal) and its
+ * pairing ("pairing", the `{responder, key}` of the machine's `paired`
+ * effect).  The Rings node keeps its replay records beside them, under
+ * "lispm-remote/rings".
+ */
+
+const DATABASE = "lispm-remote";
+const STORE = "keys";
+
+/** What the store holds. */
+export type Key = "account" | "static" | "pairing";
+
+function result<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function committed(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
+/** The page's keys and pairing. */
+export class Store {
+  private constructor(private readonly db: IDBDatabase) {}
+
+  /** Opens the store, asking the browser to keep it when space runs low. */
+  static async open(): Promise<Store> {
+    const opening = indexedDB.open(DATABASE, 1);
+    opening.onupgradeneeded = () => opening.result.createObjectStore(STORE);
+    const db = await result(opening);
+    // Losing the replay records would get the phone refused by Rings, and
+    // losing the keys would unpair it.
+    void navigator.storage?.persist?.();
+    return new Store(db);
+  }
+
+  /** The value kept under `key`, if any. */
+  async get<T>(key: Key): Promise<T | undefined> {
+    const store = this.db.transaction(STORE, "readonly").objectStore(STORE);
+    return (await result(store.get(key))) as T | undefined;
+  }
+
+  /** Keeps `value` under `key`, once it is written. */
+  async put(key: Key, value: unknown): Promise<void> {
+    const transaction = this.db.transaction(STORE, "readwrite");
+    transaction.objectStore(STORE).put(value, key);
+    await committed(transaction);
+  }
+
+  /** Forgets what is kept under `key`. */
+  async delete(key: Key): Promise<void> {
+    const transaction = this.db.transaction(STORE, "readwrite");
+    transaction.objectStore(STORE).delete(key);
+    await committed(transaction);
+  }
+}

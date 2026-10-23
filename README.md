@@ -30,12 +30,13 @@ its input. That is what lets the tests cover every order of a pairing's events.
 |-------------------------------|--------------------------------------------------------------------|
 | `crates/protocol`             | The pairing and session state machines, native and WebAssembly     |
 | `crates/module`               | The Emacs module: a Rings node on its own threads inside Emacs     |
+| `crates/web`                  | The phone's machine for its page, in WebAssembly                   |
 | `lisp/lispm-remote-module.el` | Gets the module and loads it                                       |
 | `lisp/lispm-remote-node.el`   | The node in Lisp: start, connect, send, requests, incoming frames  |
-| `lisp/lispm-remote.el`        | LispM Remote: the QR code, approval, devices, state, reconnecting  |
+| `lisp/lispm-remote.el`        | LispM Remote: the QR code, approval, devices, state, commands      |
+| `web/`                        | The phone's page, served at lispm.ai/remote                        |
 
-To come: the phone's page at lispm.ai/remote, and the browser test that scans the QR code with a
-camera feed and cuts the network.
+To come: the browser test that scans the QR code with a camera feed and cuts the network.
 
 ## Pairing a phone
 
@@ -62,6 +63,57 @@ What happens when the network drops:
   `~/.emacs.d/lispm-remote/rings/`, and the page keeps them in IndexedDB.
 - **Coming back.** A node that comes back while its old connection still looks alive is refused until
   that connection times out, about five seconds. The phone keeps offering until then.
+
+## Controlling agents from the phone
+
+Each agent in the state lists the calls it waits on, with the call's id, its tool and a short
+summary. The phone answers them, and talks to the agents, with three commands:
+
+```json
+{"type": "say", "agent": "coder", "text": "Run the tests again"}
+{"type": "decide", "agent": "coder", "call": "toolu_01", "decision": "allow"}
+{"type": "interrupt", "agent": "coder"}
+```
+
+A decision is `allow`, `always` (allow calls like it for the rest of the Emacs session) or
+`deny`, as the 1, 2 and 3 of LispM's approval prompt. LispM answers each command with
+`{"type": "ack"}` or `{"type": "error", "message": …}`, carrying the command's `id` if it had one.
+A command repeated with the same id is answered again, not done again, so the phone sends a
+command until it hears back. LispM Remote does not need LispM: without it, the state has no agents
+and every command is answered with an error.
+
+## The page
+
+The page is one static page: a little TypeScript, Rings's browser node, the phone's machine from
+`crates/web`, and [jsQR](https://github.com/cozmo/jsQR) for the camera. It has a Rings account of
+its own, a WebCrypto P-256 key that cannot be read out of the browser, and keeps it, its static
+key and its pairing in IndexedDB, with the node's replay records beside them.
+
+It reads the offer from the QR code through the camera, or from its own URL: a phone's camera app
+opens `https://lispm.ai/remote/#TOKEN`, and the page takes the token and removes it from the URL.
+While pairing it shows the fingerprint to compare with Emacs. Once paired, it shows LispM's agents,
+what each is doing and the calls it waits on, with buttons to allow or deny them, a field to tell
+an agent something and a button to stop its turn.
+
+When the network drops, the page joins Rings again through the seed every second, then opens a new
+session with LispM, without scanning again. It takes these from its URL:
+
+| Parameter     | What it is                                    | Default                          |
+|---------------|-----------------------------------------------|----------------------------------|
+| `?seed=URL`   | The seed node it joins Rings through          | `https://node.rings.rs`          |
+| `?ice=LIST`   | ICE servers, as Rings writes them             | `stun://stun.l.google.com:19302` |
+| `?name=TEXT`  | What LispM calls this phone                   | the browser and system           |
+| `?debug`      | The page's state as `window.lispmRemote`      | off                              |
+
+A seed answers a page only if it lets the page's origin call it (CORS); `node.rings.rs` lets
+only `https://rings.rs` do so for now.
+
+```sh
+make page    # build it into web/dist: wasm-pack, npm and Rust's wasm32 target
+make serve   # serve web/dist at http://localhost:8000
+```
+
+The first `make page` builds Rings's browser node from its release tag, which takes some minutes.
 
 ## The node in Emacs
 
@@ -90,11 +142,14 @@ or `make module`.
 make module      # the module, for this computer
 make test        # the Rust tests, then the Lisp tests on the built module
 make compile     # byte-compile the Lisp
+make page        # the phone's page
 cargo check -p lispm-remote-protocol --target wasm32-unknown-unknown
 ```
 
 The tests start Rings nodes on this computer and connect them over WebRTC by passing the offer and
-answer between them directly, so they need no seed node.
+answer between them directly, so they need no seed node. The tests of the phone's commands use
+LispM when it is checked out beside this repository (`../lisp_machine`, or `$LISPM_LISP`, the
+directory of its Lisp), with a scripted model, and stand-ins for its functions otherwise.
 
 ## License
 

@@ -39,13 +39,33 @@
 ;;
 ;; Once a device opens a session, LispM sends it its state, and sends it
 ;; again whenever it changes.  The state is what `lispm-remote-state-function'
-;; returns; by default, Emacs's version and LispM's agents with what each
-;; is doing.  Device and LispM talk in JSON objects, sealed end to end:
+;; returns; by default, Emacs's version and LispM's agents: each one's name,
+;; role, project, state and status, and under "approvals" the calls it waits
+;; on, each with its "call" id, its "tool" and a short "summary".  Device and
+;; LispM talk in JSON objects, sealed end to end:
 ;;
 ;;   LispM -> device   {"type": "state", "state": STATE}
 ;;   device -> LispM   {"type": "state?"}            ask for the state again
 ;;
-;; Other messages from devices go to `lispm-remote-message-functions'.
+;; A device controls LispM's agents with three commands:
+;;
+;;   {"type": "say", "agent": NAME, "text": TEXT}    give the agent the input TEXT
+;;   {"type": "decide", "agent": NAME, "call": ID,
+;;    "decision": "allow" | "always" | "deny"}     answer a call it waits on
+;;   {"type": "interrupt", "agent": NAME}           stop the agent's turn
+;;
+;; "allow" runs the call, "always" runs it and calls like it for the rest
+;; of the Emacs session, "deny" refuses it (with an optional "reason"): the
+;; 1, 2 and 3 of LispM's approval prompt.  LispM answers each command:
+;;
+;;   {"type": "ack", "command": TYPE, "id": ID}
+;;   {"type": "error", "command": TYPE, "id": ID, "message": TEXT}
+;;
+;; The "id" is the command's own, if it has one; LispM answers a command
+;; repeated with the same id again without doing it twice, so a device may
+;; send a command until it hears back.  Without LispM, every command is
+;; answered with an error.  Other messages from devices go to
+;; `lispm-remote-message-functions'.
 ;;
 ;; The keys are kept in `lispm-remote-directory', readable only by you: the
 ;; Rings account, this Emacs's static key, and the paired devices.
@@ -70,11 +90,20 @@
 (declare-function lispm-remote-core-responder-tick "lispm-remote-core")
 (declare-function lispm-remote-core-qr "lispm-remote-core")
 (declare-function lispm-agents "lispm-core")
+(declare-function lispm-get-agent "lispm-core")
 (declare-function lispm-agent-name "lispm-core")
 (declare-function lispm-agent-role "lispm-core")
 (declare-function lispm-agent-root "lispm-core")
 (declare-function lispm-agent-state "lispm-core")
 (declare-function lispm-agent-status "lispm-core")
+(declare-function lispm-agent-pending "lispm-core")
+(declare-function lispm-tell "lispm-runtime")
+(declare-function lispm-waiting-calls "lispm-runtime")
+(declare-function lispm-asked "lispm-runtime")
+(declare-function lispm-approve-for "lispm-runtime")
+(declare-function lispm-allow "lispm-runtime")
+(declare-function lispm-deny-for "lispm-runtime")
+(declare-function lispm-abort "lispm-runtime")
 
 ;;;; Options
 
@@ -127,6 +156,13 @@ object, parsed into an alist.")
 
 (defvar lispm-remote--sessions nil
   "The open sessions: a list of (PEER CHANNEL . STATE-SENT).")
+
+(defvar lispm-remote--answers nil
+  "The answers to the latest commands that had an id: an alist of
+\((PEER . ID) . ANSWER), newest first.")
+
+(defconst lispm-remote--answers-kept 64
+  "How many answers to commands LispM Remote keeps, for repeats.")
 
 (defvar lispm-remote--offer nil
   "The offer on show: a plist of :token, :name and :fingerprint of the
@@ -225,7 +261,8 @@ nil when there is none."
   (when lispm-remote--node
     (lispm-remote-node-stop lispm-remote--node))
   (setq lispm-remote--node nil lispm-remote--machine nil lispm-remote--timer nil
-        lispm-remote--state-timer nil lispm-remote--sessions nil lispm-remote--offer nil))
+        lispm-remote--state-timer nil lispm-remote--sessions nil lispm-remote--offer nil
+        lispm-remote--answers nil))
 
 (defun lispm-remote--check ()
   "Let an expired offer end, send a changed state, and rejoin the network
@@ -316,9 +353,38 @@ when the node has lost every peer."
   "Return LispM's AGENT as JSON."
   `((name . ,(format "%s" (lispm-agent-name agent)))
     (role . ,(format "%s" (lispm-agent-role agent)))
-    (project . ,(abbreviate-file-name (lispm-agent-root agent)))
+    (project . ,(abbreviate-file-name (or (lispm-agent-root agent) "")))
     (state . ,(format "%s" (lispm-agent-state agent)))
-    (status . ,(or (lispm-agent-status agent) ""))))
+    (status . ,(or (lispm-agent-status agent) ""))
+    (approvals . ,(lispm-remote--approvals agent))))
+
+(defconst lispm-remote--summary-length 300
+  "The most characters of a call's summary.")
+
+(defun lispm-remote--summary (input)
+  "Return a short text saying what a call with INPUT, an alist, does."
+  (let* ((input (and (consp input) input))
+         (text (or (seq-some (lambda (key)
+                               (let ((value (alist-get key input)))
+                                 (and (stringp value) (not (string-blank-p value)) value)))
+                             '(command code path buffer name url query))
+                   (and input
+                        (condition-case nil
+                            (json-serialize input)
+                          (error (prin1-to-string input))))
+                   "")))
+    (truncate-string-to-width (string-trim text) lispm-remote--summary-length nil nil "…")))
+
+(defun lispm-remote--approvals (agent)
+  "Return the calls LispM's AGENT waits on approval of, as JSON."
+  (vconcat
+   (and (fboundp 'lispm-waiting-calls) (fboundp 'lispm-asked)
+        (mapcar (lambda (id)
+                  (let ((asked (lispm-asked (gethash id (lispm-agent-pending agent)))))
+                    `((call . ,id)
+                      (tool . ,(format "%s" (plist-get asked :name)))
+                      (summary . ,(lispm-remote--summary (plist-get asked :input))))))
+                (lispm-waiting-calls agent)))))
 
 (defun lispm-remote--send-message (peer channel message)
   "Send MESSAGE, JSON as `json-serialize' takes it, on CHANNEL to PEER."
@@ -360,8 +426,75 @@ the session CHANNEL of PEER whether or not it changed."
                    (error nil))))
     (pcase (alist-get 'type message)
       ("state?" (lispm-remote--send-state peer channel))
+      ((and type (or "say" "decide" "interrupt"))
+       (lispm-remote--send-message peer channel (lispm-remote--answer peer type message)))
       ('nil (lispm-remote--log "a message from %s is not a JSON object" peer))
       (_ (run-hook-with-args 'lispm-remote-message-functions peer channel message)))))
+
+;;;; Commands
+
+(defun lispm-remote--answer (peer type message)
+  "Return the answer to the command MESSAGE of TYPE from PEER, doing it
+unless it repeats one already done."
+  (let* ((id (alist-get 'id message))
+         (key (and id (cons peer id))))
+    (or (and key (cdr (assoc key lispm-remote--answers)))
+        (let ((answer (lispm-remote--do type message)))
+          (when key
+            (setq lispm-remote--answers
+                  (seq-take (cons (cons key answer) lispm-remote--answers)
+                            lispm-remote--answers-kept)))
+          answer))))
+
+(defun lispm-remote--do (type message)
+  "Do the command MESSAGE of TYPE, and return its answer, as JSON."
+  (let ((id (and (alist-get 'id message) `((id . ,(alist-get 'id message))))))
+    (condition-case error
+        (progn
+          (pcase type
+            ("say" (lispm-remote-say (alist-get 'agent message) (alist-get 'text message)))
+            ("decide" (lispm-remote-decide (alist-get 'agent message) (alist-get 'call message)
+                                           (alist-get 'decision message)
+                                           (alist-get 'reason message)))
+            ("interrupt" (lispm-remote-interrupt (alist-get 'agent message))))
+          `((type . "ack") (command . ,type) ,@id))
+      (error
+       `((type . "error") (command . ,type) ,@id
+         (message . ,(error-message-string error)))))))
+
+(defun lispm-remote--lispm-agent (name)
+  "Return LispM's agent called NAME, a string, or signal a `user-error'."
+  (unless (fboundp 'lispm-get-agent)
+    (user-error "LispM is not running in this Emacs"))
+  (unless (and (stringp name) (not (string-empty-p name)))
+    (user-error "Which agent?"))
+  (or (lispm-get-agent name t)
+      (user-error "No agent is called %s" name)))
+
+(defun lispm-remote-say (agent text)
+  "Give LispM's AGENT, named by a string, the input TEXT, as a device does."
+  (let ((agent (lispm-remote--lispm-agent agent)))
+    (unless (and (stringp text) (not (string-blank-p text)))
+      (user-error "There is nothing to say"))
+    (lispm-tell agent text)))
+
+(defun lispm-remote-decide (agent call decision &optional reason)
+  "Answer the CALL that LispM's AGENT, named by a string, waits on.
+DECISION is \"allow\" to run it, \"always\" to run it and calls like it
+for the rest of the Emacs session, or \"deny\" to refuse it, for REASON
+if given."
+  (let ((agent (lispm-remote--lispm-agent agent)))
+    (unless (and (stringp call) (member call (lispm-waiting-calls agent)))
+      (user-error "%s waits on no call %s" (lispm-agent-name agent) call))
+    (pcase decision
+      ("allow" (lispm-approve-for agent call))
+      ("always" (lispm-allow agent call))
+      ("deny" (lispm-deny-for agent (and (stringp reason) reason) call))
+      (_ (user-error "A decision is allow, always or deny, not %s" decision)))))
+
+(defun lispm-remote-interrupt (agent)
+  "Stop the turn of LispM's AGENT, named by a string."
+  (lispm-abort (lispm-remote--lispm-agent agent)))
 
 ;;;; Pairing
 
