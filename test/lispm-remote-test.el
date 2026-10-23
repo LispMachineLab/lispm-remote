@@ -22,15 +22,41 @@
 
 ;; `lispm-remote-mode' against a phone, all in one Emacs over real Rings
 ;; nodes: the phone is a second node driving the device's machine, as the
-;; page at lispm.ai/remote will.  LispM and the phone are each connected
+;; page at lispm.ai/remote does.  LispM and the phone are each connected
 ;; to a third node only, which stands for the network.  The page itself,
 ;; its camera and a real network outage are the browser test's.
+;;
+;; The phone's commands act on LispM's agents.  With LispM checked out
+;; beside this repository (../lisp_machine, or the directory of its Lisp in
+;; $LISPM_LISP), they act on a real agent whose model is scripted;
+;; without it, on a stand-in for the few functions LispM Remote calls.
 
 ;;; Code:
 
 (require 'ert)
 (require 'lispm-remote)
 (require 'lispm-remote-node-test)
+
+(defconst lispm-remote-test--lispm-lisp
+  (let ((directory (or (getenv "LISPM_LISP")
+                       (expand-file-name "../../lisp_machine/lisp"
+                                         (file-name-directory
+                                          (or load-file-name buffer-file-name))))))
+    (and (file-readable-p (expand-file-name "lispm-runtime.el" directory))
+         (file-name-as-directory directory)))
+  "The directory of LispM's Lisp, when LispM is at hand.")
+
+;; LispM's agents, without its interface; its directory is a scratch one
+;; from the start, never the user's.
+(when lispm-remote-test--lispm-lisp
+  (defvar lispm-directory (make-temp-file "lispm-remote-test-lispm" t))
+  (let ((directory lispm-directory))
+    (add-hook 'kill-emacs-hook (lambda () (delete-directory directory t))))
+  (add-to-list 'load-path lispm-remote-test--lispm-lisp)
+  (require 'lispm-runtime)
+  ;; Its conversations, as LispM Remote reads them; loaded now, so that
+  ;; the variables it defines are special before the tests bind them.
+  (require 'lispm-chat))
 
 (declare-function lispm-remote-core-generate-account "lispm-remote-core")
 (declare-function lispm-remote-core-generate-static "lispm-remote-core")
@@ -113,12 +139,43 @@ again while none came since the channel opened, as the page does."
       (`(failed . ,why)
        (push why (lispm-remote-test-phone-failures phone))))))
 
+(defun lispm-remote-test--last-state (phone)
+  "Return the last state PHONE received."
+  (alist-get 'state (seq-find (lambda (message) (equal (alist-get 'type message) "state"))
+                              (lispm-remote-test-phone-states phone))))
+
 (defun lispm-remote-test--agent-state (phone)
   "Return the state of the first agent in the last state PHONE received."
-  (let* ((message (car (lispm-remote-test-phone-states phone)))
-         (state (alist-get 'state message)))
-    (should (equal (alist-get 'type message) "state"))
-    (alist-get 'state (car (alist-get 'agents state)))))
+  (alist-get 'state (car (alist-get 'agents (lispm-remote-test--last-state phone)))))
+
+(defun lispm-remote-test--agent (phone name)
+  "Return the agent NAME in the last state PHONE received."
+  (seq-find (lambda (agent) (equal (alist-get 'name agent) name))
+            (alist-get 'agents (lispm-remote-test--last-state phone))))
+
+(defvar lispm-remote-test--ids 0
+  "The last id a test command was given.")
+
+(defun lispm-remote-test--send (phone message)
+  "Send MESSAGE, JSON as `json-serialize' takes it, from PHONE."
+  (lispm-remote-test--phone-apply
+   phone (lispm-remote-core-initiator-send (lispm-remote-test-phone-machine phone)
+                                           (json-serialize message))))
+
+(defun lispm-remote-test--command (phone message)
+  "Send the command MESSAGE from PHONE until LispM answers, as the page
+does, and return the answer."
+  (let* ((id (format "c%d" (cl-incf lispm-remote-test--ids)))
+         (message (cons (cons 'id id) message))
+         (sent 0))
+    (lispm-remote-node-test--wait
+     (lambda ()
+       (when (> (- (float-time) sent) 2)
+         (setq sent (float-time))
+         (lispm-remote-test--send phone message))
+       (seq-find (lambda (answer) (equal (alist-get 'id answer) id))
+                 (lispm-remote-test-phone-states phone)))
+     (format "answer to %s" (alist-get 'type message)))))
 
 (defvar lispm-remote-test--state nil
   "The state LispM shows, in the tests.")
@@ -165,6 +222,258 @@ owner.  Return the fingerprint the phone shows."
   (lispm-remote-node-test--wait (lambda () (plist-get lispm-remote--offer :fingerprint))
                                 "pairing request")
   (lispm-remote-test-phone-fingerprint phone))
+
+(defun lispm-remote-test--pair (phone)
+  "Pair PHONE, and wait for the state it sees first."
+  (lispm-remote-approve (lispm-remote-test--claim phone))
+  (lispm-remote-node-test--wait (lambda () (lispm-remote-test--last-state phone))
+                                "state after pairing"))
+
+;;;; LispM's agents
+
+(defvar lispm-remote-test--responses nil
+  "What LispM's scripted model answers, in order: messages, or `hang'.")
+
+(defvar lispm-remote-test--requests nil
+  "The requests LispM's scripted model received, newest first.")
+
+(defvar lispm-remote-test--project nil
+  "The project directory of the test's agent.")
+
+(defvar lispm-remote-test--calls 0
+  "The last call id the test's agent was given.")
+
+(cl-defstruct (lispm-remote-test-agent (:constructor lispm-remote-test--agent-create)
+                                       (:copier nil))
+  "A stand-in for one of LispM's agents, when LispM is not at hand."
+  name (state 'idle) told (calls (make-hash-table :test #'equal)) decided allowed
+  items (buffer (generate-new-buffer " *stand-in session*")))
+
+(defvar lispm-remote-test--answer nil
+  "What the test's agent answers next, when it is told something.")
+
+(defvar lispm-remote-test--stand-in nil
+  "The stand-in agent, when LispM is not at hand.")
+
+(defun lispm-remote-test--fake-api (_backend body _betas &rest callbacks)
+  "Answer BODY with the next of `lispm-remote-test--responses', through
+CALLBACKS, as LispM's backends do."
+  (push body lispm-remote-test--requests)
+  (let ((response (pop lispm-remote-test--responses)))
+    (unless (eq response 'hang)
+      (run-at-time 0.01 nil
+                   (lambda ()
+                     (if response
+                         (funcall (plist-get callbacks :on-done) response)
+                       (funcall (plist-get callbacks :on-error)
+                                '(:status 400 :type "test_error" :message "no more answers"))))))
+    nil))
+
+(defun lispm-remote-test--reply (stop &rest blocks)
+  "A message of the model with BLOCKS, which stopped for STOP."
+  `((role . "assistant") (content . ,(vconcat blocks)) (stop_reason . ,stop)
+    (usage (input_tokens . 10) (output_tokens . 5))))
+
+(defun lispm-remote-test--real-agent ()
+  "The test's agent in LispM."
+  (lispm-get-agent "tester"))
+
+(defun lispm-remote-test--stand-in-changed ()
+  "Tell LispM Remote that the stand-in agent changed, as LispM does."
+  (run-hook-with-args 'lispm-state-change-functions lispm-remote-test--stand-in))
+
+(defmacro lispm-remote-test--with-lispm (&rest body)
+  "Run BODY with one agent of LispM, called tester, idle in a scratch
+project: a real one when LispM is at hand, else a stand-in."
+  (declare (indent 0))
+  `(if lispm-remote-test--lispm-lisp
+       (lispm-remote-test--with-real-lispm (lambda () ,@body))
+     (lispm-remote-test--with-stand-in (lambda () ,@body))))
+
+(defun lispm-remote-test--with-real-lispm (body)
+  "Call BODY with a real agent of LispM, in scratch directories, its model
+scripted."
+  (let* ((tmp (file-name-as-directory (make-temp-file "lispm-remote-lispm" t)))
+         (lispm-directory (expand-file-name "home/" tmp))
+         (lispm-remote-test--project (expand-file-name "project/" tmp))
+         (lispm-git nil)
+         (lispm-auto-title nil)
+         (lispm-backends (cons '(test :api anthropic :url "http://fake.invalid" :model "test-model")
+                               lispm-backends))
+         (lispm-backend 'test)
+         (lispm--agents nil)
+         (lispm--roles (copy-sequence lispm--roles))
+         (lispm-api-function #'lispm-remote-test--fake-api)
+         (lispm-remote-test--responses nil)
+         (lispm-remote-test--requests nil)
+         (lispm--idle-work (make-hash-table :test #'equal))
+         (process-environment (lispm--git-environment)))
+    (make-directory lispm-remote-test--project t)
+    (unwind-protect
+        (progn
+          (eval `(lispm-defagent tester :root ,lispm-remote-test--project) t)
+          (funcall body))
+      (dolist (agent (lispm-agents))
+        (lispm-unwatch agent))
+      (maphash (lambda (_ timer) (cancel-timer timer)) lispm--idle-work)
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer) (file-in-directory-p (buffer-file-name buffer) tmp))
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer)))
+      (delete-directory tmp t))))
+
+(defun lispm-remote-test--with-stand-in (body)
+  "Call BODY with LispM's few functions that LispM Remote calls standing in
+for LispM, over one agent."
+  (let* ((agent (lispm-remote-test--agent-create :name 'tester))
+         (lispm-remote-test--stand-in agent)
+         (lispm-remote-test--project "/tmp/project/")
+         (waiting (lambda (agent)
+                    (let (ids)
+                      (maphash (lambda (id _) (push id ids)) (lispm-remote-test-agent-calls agent))
+                      (sort ids #'string<))))
+         (settle (lambda (agent id decision)
+                   (push (cons id decision) (lispm-remote-test-agent-decided agent))
+                   (remhash id (lispm-remote-test-agent-calls agent))
+                   (when (zerop (hash-table-count (lispm-remote-test-agent-calls agent)))
+                     (setf (lispm-remote-test-agent-state agent) 'idle))
+                   (lispm-remote-test--stand-in-changed))))
+    (cl-letf (((symbol-function 'lispm-agents) (lambda () (list agent)))
+              ((symbol-function 'lispm-get-agent)
+               (lambda (name &optional _noerror) (and (equal name "tester") agent)))
+              ((symbol-function 'lispm-agent-name) #'lispm-remote-test-agent-name)
+              ((symbol-function 'lispm-agent-role) (lambda (_) 'assistant))
+              ((symbol-function 'lispm-agent-root) (lambda (_) lispm-remote-test--project))
+              ((symbol-function 'lispm-agent-state) #'lispm-remote-test-agent-state)
+              ((symbol-function 'lispm-agent-status) (lambda (_) nil))
+              ((symbol-function 'lispm-agent-pending) #'lispm-remote-test-agent-calls)
+              ((symbol-function 'lispm-waiting-calls) waiting)
+              ((symbol-function 'lispm-asked) #'identity)
+              ((symbol-function 'lispm-agent-buffer) #'lispm-remote-test-agent-buffer)
+              ((symbol-function 'lispm-chat-items)
+               (lambda (_buffer) (reverse (lispm-remote-test-agent-items agent))))
+              ((symbol-function 'lispm-tell)
+               (lambda (agent text &rest _)
+                 (push text (lispm-remote-test-agent-told agent))
+                 (push (list :kind 'user :text text) (lispm-remote-test-agent-items agent))
+                 (when lispm-remote-test--answer
+                   (push (list :kind 'text :text lispm-remote-test--answer)
+                         (lispm-remote-test-agent-items agent)))
+                 (lispm-remote-test--stand-in-changed)
+                 agent))
+              ((symbol-function 'lispm-approve-for)
+               (lambda (agent &optional id) (funcall settle agent id 'approve)))
+              ((symbol-function 'lispm-allow)
+               (lambda (agent id)
+                 (setf (lispm-remote-test-agent-allowed agent) t)
+                 (funcall settle agent id 'approve)))
+              ((symbol-function 'lispm-deny-for)
+               (lambda (agent _reason &optional id) (funcall settle agent id 'deny)))
+              ((symbol-function 'lispm-abort)
+               (lambda (agent)
+                 (when (eq (lispm-remote-test-agent-state agent) 'idle)
+                   (user-error "%s is idle" (lispm-remote-test-agent-name agent)))
+                 (setf (lispm-remote-test-agent-state agent) 'idle)
+                 (lispm-remote-test--stand-in-changed))))
+      (unwind-protect
+          (funcall body)
+        (kill-buffer (lispm-remote-test-agent-buffer agent))))))
+
+(defun lispm-remote-test--answer-next (text)
+  "Have the agent answer TEXT when it is told something next."
+  (if lispm-remote-test--lispm-lisp
+      (setq lispm-remote-test--responses
+            (list (lispm-remote-test--reply "end_turn" `((type . "text") (text . ,text)))))
+    (setq lispm-remote-test--answer text)))
+
+(defun lispm-remote-test--ask ()
+  "Have the agent ask to write a file in its project; return the call's id
+and the file."
+  (let* ((id (format "t%d" (cl-incf lispm-remote-test--calls)))
+         (file (format "note-%s.txt" id)))
+    (if lispm-remote-test--lispm-lisp
+        (let ((agent (lispm-remote-test--real-agent)))
+          (setq lispm-remote-test--responses
+                (list (lispm-remote-test--reply
+                       "tool_use" `((type . "tool_use") (id . ,id) (name . "write_file")
+                                    (input (path . ,file) (content . "hello\n"))))
+                      (lispm-remote-test--reply "end_turn" '((type . "text") (text . "done")))))
+          (lispm-tell agent (format "write %s" file))
+          (lispm-remote-node-test--wait (lambda () (member id (lispm-waiting-calls agent)))
+                                        "a call awaiting approval"))
+      (let ((agent lispm-remote-test--stand-in))
+        (puthash id (list :name "write_file" :input `((path . ,file) (content . "hello\n")))
+                 (lispm-remote-test-agent-calls agent))
+        (setf (lispm-remote-test-agent-state agent) 'waiting)
+        (lispm-remote-test--stand-in-changed)))
+    (cons id file)))
+
+(defun lispm-remote-test--decided (call)
+  "Return how the agent's CALL was settled: `approve', `deny', or nil."
+  (if lispm-remote-test--lispm-lisp
+      (let ((file (expand-file-name (cdr call) lispm-remote-test--project))
+            (agent (lispm-remote-test--real-agent)))
+        (cond ((member (car call) (lispm-waiting-calls agent)) nil)
+              ((not (eq (lispm-agent-state agent) 'idle)) nil)
+              ((file-exists-p file) 'approve)
+              (t 'deny)))
+    (alist-get (car call) (lispm-remote-test-agent-decided lispm-remote-test--stand-in)
+               nil nil #'equal)))
+
+(defun lispm-remote-test--allowed-p ()
+  "Return non-nil when the agent may make calls like the one approved for
+good without asking."
+  (if lispm-remote-test--lispm-lisp
+      (lispm-agent-allowed (lispm-remote-test--real-agent))
+    (lispm-remote-test-agent-allowed lispm-remote-test--stand-in)))
+
+(defun lispm-remote-test--told ()
+  "Return the texts the agent was told: with LispM, those of the user's
+messages in its latest request, which holds the whole session."
+  (if lispm-remote-test--lispm-lisp
+      (let (told)
+        (seq-doseq (message (alist-get 'messages (car lispm-remote-test--requests)))
+          (when (equal (alist-get 'role message) "user")
+            (let ((content (alist-get 'content message)))
+              (if (stringp content)
+                  (push content told)
+                (seq-doseq (block content)
+                  (when (equal (alist-get 'type block) "text")
+                    (push (alist-get 'text block) told)))))))
+        told)
+    (lispm-remote-test-agent-told lispm-remote-test--stand-in)))
+
+(defun lispm-remote-test--told-count (text)
+  "Return how often the agent was told TEXT."
+  (seq-count (lambda (told) (string-search text told)) (lispm-remote-test--told)))
+
+(defun lispm-remote-test--make-busy ()
+  "Have the agent start a turn that does not end by itself."
+  (if lispm-remote-test--lispm-lisp
+      (let ((agent (lispm-remote-test--real-agent)))
+        (setq lispm-remote-test--responses '(hang))
+        (lispm-tell agent "think forever")
+        (lispm-remote-node-test--wait (lambda () (eq (lispm-agent-state agent) 'requesting))
+                                      "a turn"))
+    (setf (lispm-remote-test-agent-state lispm-remote-test--stand-in) 'requesting)
+    (lispm-remote-test--stand-in-changed)))
+
+(defun lispm-remote-test--idle-p ()
+  "Return non-nil when the agent is idle, with nothing more to do."
+  (if lispm-remote-test--lispm-lisp
+      (let ((agent (lispm-remote-test--real-agent)))
+        (and (eq (lispm-agent-state agent) 'idle) (null (lispm-agent-inbox agent))))
+    (eq (lispm-remote-test-agent-state lispm-remote-test--stand-in) 'idle)))
+
+(defmacro lispm-remote-test--with-agents (bindings &rest body)
+  "Run BODY with LispM Remote on, a phone paired with it, and LispM's agent
+tester, bound as BINDINGS says: (PHONE)."
+  (declare (indent 1))
+  `(lispm-remote-test--with-world (_relay ,(car bindings))
+     (lispm-remote-test--with-lispm
+       (let ((lispm-remote-state-function #'lispm-remote-default-state))
+         (lispm-remote-test--pair ,(car bindings))
+         ,@body))))
 
 (ert-deftest lispm-remote-test-pair-see-state-drop-and-reconnect ()
   (skip-unless (lispm-remote-node-test--module-p))
@@ -276,5 +585,207 @@ owner.  Return the fingerprint the phone shows."
         (delete-file file))
       (should (= (length (split-string (lispm-remote--qr-text rows) "\n"))
                  (/ (1+ side) 2))))))
+
+;;;; Commands
+
+(defun lispm-remote-test--approvals (phone)
+  "Return the approvals of the agent tester in PHONE's last state."
+  (alist-get 'approvals (lispm-remote-test--agent phone "tester")))
+
+(defun lispm-remote-test--decide (phone call decision)
+  "Have PHONE answer the agent's CALL by DECISION; return LispM's answer."
+  (lispm-remote-node-test--wait
+   (lambda () (seq-find (lambda (approval) (equal (alist-get 'call approval) (car call)))
+                        (lispm-remote-test--approvals phone)))
+   "the approval on the phone")
+  (lispm-remote-test--command
+   phone `((type . "decide") (agent . "tester") (call . ,(car call)) (decision . ,decision))))
+
+(ert-deftest lispm-remote-test-a-phone-sees-approvals-and-answers-them ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (lispm-remote-test--with-agents (phone)
+    (should (equal (lispm-remote-test--approvals phone) nil))
+    ;; The phone sees what the agent waits on, and allows it.
+    (let ((call (lispm-remote-test--ask)))
+      (lispm-remote-node-test--wait (lambda () (lispm-remote-test--approvals phone))
+                                    "approvals in the state")
+      (let ((approval (car (lispm-remote-test--approvals phone))))
+        (should (equal (alist-get 'call approval) (car call)))
+        (should (equal (alist-get 'tool approval) "write_file"))
+        (should (equal (alist-get 'summary approval) (cdr call))))
+      (should (equal (alist-get 'type (lispm-remote-test--decide phone call "allow")) "ack"))
+      (should (eq (lispm-remote-node-test--wait (lambda () (lispm-remote-test--decided call))
+                                                "the call settled")
+                  'approve))
+      (should-not (lispm-remote-test--allowed-p))
+      (lispm-remote-node-test--wait (lambda () (null (lispm-remote-test--approvals phone)))
+                                    "the approval gone from the phone"))
+    ;; A decision that is none changes nothing; the phone then denies.
+    (let ((call (lispm-remote-test--ask)))
+      (let ((answer (lispm-remote-test--decide phone call "maybe")))
+        (should (equal (alist-get 'type answer) "error"))
+        (should (equal (alist-get 'command answer) "decide"))
+        (should (string-search "allow, always or deny" (alist-get 'message answer))))
+      (should-not (lispm-remote-test--decided call))
+      (should (equal (alist-get 'type (lispm-remote-test--decide phone call "deny")) "ack"))
+      (should (eq (lispm-remote-node-test--wait (lambda () (lispm-remote-test--decided call))
+                                                "the call settled")
+                  'deny)))
+    ;; A call the agent does not wait on is an error.
+    (let ((answer (lispm-remote-test--command
+                   phone '((type . "decide") (agent . "tester") (call . "t99") (decision . "allow")))))
+      (should (equal (alist-get 'type answer) "error"))
+      (should (string-search "waits on no call t99" (alist-get 'message answer))))
+    ;; Last, as it allows the calls after it: one allowed for good.
+    (let ((call (lispm-remote-test--ask)))
+      (should (equal (alist-get 'type (lispm-remote-test--decide phone call "always")) "ack"))
+      (should (eq (lispm-remote-node-test--wait (lambda () (lispm-remote-test--decided call))
+                                                "the call settled")
+                  'approve))
+      (should (lispm-remote-test--allowed-p)))))
+
+(ert-deftest lispm-remote-test-a-phone-talks-to-an-agent-and-stops-it ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (lispm-remote-test--with-agents (phone)
+    (when lispm-remote-test--lispm-lisp
+      (setq lispm-remote-test--responses
+            (list (lispm-remote-test--reply "end_turn" '((type . "text") (text . "hi"))))))
+    (should (equal (alist-get 'type (lispm-remote-test--command
+                                     phone '((type . "say") (agent . "tester") (text . "hello"))))
+                   "ack"))
+    (lispm-remote-node-test--wait (lambda () (= (lispm-remote-test--told-count "hello") 1))
+                                  "the agent told")
+    (lispm-remote-node-test--wait #'lispm-remote-test--idle-p "the turn's end")
+    ;; Nobody to tell, or nothing to say.
+    (let ((answer (lispm-remote-test--command
+                   phone '((type . "say") (agent . "nobody") (text . "hello")))))
+      (should (equal (alist-get 'type answer) "error"))
+      (should (string-search "No agent is called nobody" (alist-get 'message answer))))
+    (should (equal (alist-get 'type (lispm-remote-test--command
+                                     phone '((type . "say") (agent . "tester") (text . "  "))))
+                   "error"))
+    ;; A turn under way, as the phone sees it, stopped from the phone.
+    (lispm-remote-test--make-busy)
+    (lispm-remote-node-test--wait
+     (lambda () (equal (alist-get 'state (lispm-remote-test--agent phone "tester")) "requesting"))
+     "the turn on the phone")
+    (should (equal (alist-get 'type (lispm-remote-test--command
+                                     phone '((type . "interrupt") (agent . "tester"))))
+                   "ack"))
+    (should (lispm-remote-test--idle-p))
+    (lispm-remote-node-test--wait
+     (lambda () (equal (alist-get 'state (lispm-remote-test--agent phone "tester")) "idle"))
+     "the agent idle on the phone")
+    ;; An idle agent has no turn to stop.
+    (let ((answer (lispm-remote-test--command phone '((type . "interrupt") (agent . "tester")))))
+      (should (equal (alist-get 'type answer) "error"))
+      (should (string-search "idle" (alist-get 'message answer))))))
+
+(ert-deftest lispm-remote-test-a-repeated-command-is-done-once ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (lispm-remote-test--with-agents (phone)
+    (when lispm-remote-test--lispm-lisp
+      (setq lispm-remote-test--responses
+            (list (lispm-remote-test--reply "end_turn" '((type . "text") (text . "hi"))))))
+    (let ((command '((id . "once") (type . "say") (agent . "tester") (text . "only once"))))
+      (dotimes (_ 3)
+        (lispm-remote-test--send phone command))
+      (lispm-remote-node-test--wait
+       (lambda () (= (seq-count (lambda (answer) (equal (alist-get 'id answer) "once"))
+                                (lispm-remote-test-phone-states phone))
+                     3))
+       "three answers")
+      (should (seq-every-p (lambda (answer)
+                             (or (not (equal (alist-get 'id answer) "once"))
+                                 (equal (alist-get 'type answer) "ack")))
+                           (lispm-remote-test-phone-states phone)))
+      (lispm-remote-node-test--wait #'lispm-remote-test--idle-p "the turn's end")
+      (should (= (lispm-remote-test--told-count "only once") 1)))))
+
+(ert-deftest lispm-remote-test-commands-need-lispm ()
+  (cl-letf (((symbol-function 'lispm-get-agent) nil))
+    (let ((answer (lispm-remote--do "peer" "channel" "say" '((id . 7) (agent . "coder") (text . "hello")))))
+      (should (equal answer '((type . "error") (command . "say") (id . 7)
+                              (message . "LispM is not running in this Emacs")))))))
+
+(ert-deftest lispm-remote-test-a-call-is-summed-up-briefly ()
+  (should (equal (lispm-remote--summary '((command . "make test") (why . "check"))) "make test"))
+  (should (equal (lispm-remote--summary '((path . "a.el") (content . "x"))) "a.el"))
+  (should (equal (lispm-remote--summary '((n . 3))) "{\"n\":3}"))
+  (should (equal (lispm-remote--summary nil) ""))
+  (let ((summary (lispm-remote--summary `((code . ,(make-string 1000 ?x))))))
+    (should (= (length summary) lispm-remote--summary-length))
+    (should (string-suffix-p "…" summary))))
+
+;;;; Conversations
+
+(defun lispm-remote-test--chat (phone)
+  "Return the last chat PHONE received."
+  (seq-find (lambda (message) (equal (alist-get 'type message) "chat"))
+            (lispm-remote-test-phone-states phone)))
+
+(defun lispm-remote-test--said (phone kind)
+  "Return the texts of the items of KIND in the last chat PHONE received."
+  (mapcar (lambda (item) (alist-get 'text item))
+          (seq-filter (lambda (item) (equal (alist-get 'kind item) kind))
+                      (alist-get 'items (lispm-remote-test--chat phone)))))
+
+(ert-deftest lispm-remote-test-a-phone-follows-an-agents-conversation ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (lispm-remote-test--with-agents (phone)
+    (let ((hello (concat "Hello " (string #x3bb #x4f60 #x597d) " ✓"))
+          (lispm-remote-test--answer nil))
+      (should (equal (alist-get 'type (lispm-remote-test--command
+                                       phone '((type . "watch") (agent . "tester"))))
+                     "ack"))
+      (lispm-remote-node-test--wait (lambda () (lispm-remote-test--chat phone)) "the conversation")
+      (should (equal (alist-get 'agent (lispm-remote-test--chat phone)) "tester"))
+      ;; What the phone says, and the answer, show in the conversation,
+      ;; whatever the script.
+      (lispm-remote-test--answer-next "Hi, phone.")
+      (lispm-remote-test--command phone `((type . "say") (agent . "tester") (text . ,hello)))
+      (lispm-remote-node-test--wait
+       (lambda () (and (member hello (lispm-remote-test--said phone "user"))
+                       (member "Hi, phone." (lispm-remote-test--said phone "text"))))
+       "the answer in the conversation")
+      (should (= (alist-get 'more (lispm-remote-test--chat phone)) 0))
+      ;; Nobody to follow.
+      (let ((answer (lispm-remote-test--command
+                     phone '((type . "watch") (agent . "nobody")))))
+        (should (equal (alist-get 'type answer) "error"))
+        (should (string-search "No agent is called nobody" (alist-get 'message answer))))
+      ;; Following none.
+      (should (equal (alist-get 'type (lispm-remote-test--command phone '((type . "watch"))))
+                     "ack"))
+      (should-not (lispm-remote--session-watch (car lispm-remote--sessions))))))
+
+(ert-deftest lispm-remote-test-a-conversation-is-cut-to-fit-one-record ()
+  (let* ((buffer (generate-new-buffer " *session*"))
+         (items (cl-loop for i below 100
+                         collect (list :kind (if (cl-oddp i) 'text 'user)
+                                       :text (make-string (if (= i 99) 9000 1500) ?x))))
+         (call (list :kind 'tool :name "run_shell" :state "DONE"
+                     :input '((command . "make test")) :result (make-string 2000 ?y))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'lispm-get-agent)
+                   (lambda (name &optional _noerror) (and (equal name "tester") 'tester)))
+                  ((symbol-function 'lispm-agent-buffer) (lambda (_) buffer))
+                  ((symbol-function 'lispm-chat-items) (lambda (_) (append items (list call)))))
+          (let* ((chat (lispm-remote--chat "tester"))
+                 (kept (alist-get 'items chat))
+                 (last (aref kept (1- (length kept))))
+                 (before (aref kept (- (length kept) 2))))
+            (should (<= (length kept) lispm-remote-chat-items))
+            (should (= (+ (length kept) (alist-get 'more chat)) 101))
+            (should (<= (string-bytes (json-serialize kept)) lispm-remote--chat-bytes))
+            ;; Newest last; long texts and results cut short.
+            (should (equal (alist-get 'kind last) "tool"))
+            (should (equal (alist-get 'summary last) "make test"))
+            (should (= (length (alist-get 'result last)) lispm-remote--chat-result-length))
+            (should (= (length (alist-get 'text before)) lispm-remote--chat-text-length))
+            (should (string-suffix-p "…" (alist-get 'text before))))
+          (should (equal (lispm-remote--chat "nobody")
+                         '((type . "chat") (agent . "nobody") (items . []) (more . 0)))))
+      (kill-buffer buffer))))
 
 ;;; lispm-remote-test.el ends here

@@ -2,7 +2,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/module", "crates/protocol"]
+members = ["crates/module", "crates/protocol", "crates/web"]
 
 [workspace.package]
 version = "0.1.0"

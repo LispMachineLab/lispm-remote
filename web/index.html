@@ -1,0 +1,43 @@
+<!doctype html>
+<!--
+  lispm-remote: the page at lispm.ai/remote.
+
+  Copyright (C) 2026  Ryan.K
+  SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="referrer" content="no-referrer">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#16161a" media="(prefers-color-scheme: dark)">
+    <title>LispM Remote</title>
+    <link rel="stylesheet" href="./style.css">
+    <script type="importmap">
+      {
+        "imports": {
+          "lispm-remote-web": "./pkg/lispm_remote_web.js",
+          "rings-node": "./rings/rings_node.js"
+        }
+      }
+    </script>
+    <script src="./jsQR.js"></script>
+    <script type="module" src="./main.js"></script>
+  </head>
+  <body>
+    <header class="top">
+      <h1>LispM Remote</h1>
+      <p id="status" class="status busy">Starting…</p>
+    </header>
+    <main>
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+      <section id="pair" class="card" hidden></section>
+      <section id="agents" aria-label="Agents" hidden></section>
+      <section id="chat" class="chat" hidden></section>
+    </main>
+    <footer id="about"></footer>
+    <noscript>LispM Remote needs JavaScript and WebAssembly.</noscript>
+  </body>
+</html>
