@@ -163,9 +163,18 @@ through callbacks, so it never waits on the network. Frames from other peers arr
 The node's identity is a Rings account key. It is made the first time and kept in
 `~/.emacs.d/lispm-remote/account`, which only you can read.
 
-LispM's modules are meant to be downloaded and checked against pinned checksums. No module is
-published yet, so for now you have to choose to build it: `(setq lispm-remote-module-source 'build)`,
-or `make module`.
+You never have to build the module. LispM Remote downloads the one published for your computer
+(macOS on Apple silicon or Intel, GNU/Linux on x86_64 or arm64), and keeps it only if its SHA-256
+matches the one pinned in `lisp/lispm-remote-module-sums.eld`. That file comes from the repository's
+signed history, not from the release, so a module changed after it was pinned is refused.
+
+To build the module yourself instead, set `(setq lispm-remote-module-source 'build)` or run
+`make module`.
+
+**Publishing a module.** The Module release workflow builds the module for each computer from
+`main` and publishes it as `module-VERSION`, where VERSION is a digest of the module's sources. Each
+version is built and published once. After that, `make pin` writes the checksums into the sums file
+for the release that ships it, and `make check-pins` checks that file against the published release.
 
 ## LispM's windows on another device
 

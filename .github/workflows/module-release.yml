@@ -1,0 +1,183 @@
+name: Module release
+
+# LispM Remote's Emacs module, built for the computers LispM runs on and,
+# from main, published where lispm-remote-module.el downloads it: the
+# release module-VERSION, VERSION being what
+# `lispm-remote-module-source-version' makes of the sources it is built
+# from.  A version is built and released once, then left as it is; its
+# release is never marked the latest, which stays LispM Remote's own.
+# LispM Remote keeps a download only when its SHA-256 is the one
+# lisp/lispm-remote-module-sums.eld pins, which `make pin' writes from the
+# release, in the release of LispM Remote that ships it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/display/**'
+      - 'crates/module/**'
+      - 'crates/protocol/**'
+      - 'crates/relay/**'
+      - 'lisp/lispm-remote-module.el'
+      - 'lisp/lispm-remote-module-sums.eld'
+      - '.github/workflows/module-release.yml'
+  pull_request:
+    paths:
+      - 'lisp/lispm-remote-module.el'
+      - 'lisp/lispm-remote-module-sums.eld'
+      - '.github/workflows/module-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      published: ${{ steps.version.outputs.published }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(emacs -Q --batch -L lisp -l lispm-remote-module --eval '(princ (lispm-remote-module-source-version))')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "module-$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "module-$version is published already"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      # What the Lisp pins is what the release holds, when it pins these
+      # sources; between a change of them and the next pin it pins others.
+      - name: Check the pins
+        run: make check-pins
+
+  build:
+    name: ${{ matrix.target }}
+    needs: version
+    # Building Rings takes minutes on each computer, so a version is built
+    # once: on main when it is not published, and on a pull request that
+    # changes how modules are published or found.
+    if: github.event_name == 'pull_request' || needs.version.outputs.published == 'false'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            suffix: dylib
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            suffix: dylib
+          # The oldest glibc of the runners: its module loads with any newer one.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            suffix: so
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            suffix: so
+    env:
+      # The macOS LispM's installer and Emacs's builds support.
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      ASSET: lispm-remote-module-${{ matrix.target }}.${{ matrix.suffix }}.gz
+      MODULE: target/${{ matrix.target }}/release/liblispm_remote_module.${{ matrix.suffix }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: |
+          rustup target add ${{ matrix.target }}
+          make module TARGET=${{ matrix.target }}
+          file "$MODULE"
+      # It needs the system's libraries only, and on macOS no newer system
+      # than LispM supports.
+      - name: Check what it needs
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            otool -L "$MODULE"
+            if otool -L "$MODULE" | tail -n +2 | grep -v -e '^[[:space:]]*/usr/lib/' -e '^[[:space:]]*/System/' -e 'liblispm_remote_module'; then
+              echo "::error::the module needs a library outside the system"
+              exit 1
+            fi
+            otool -l "$MODULE" | grep -A3 -e LC_BUILD_VERSION -e LC_VERSION_MIN_MACOSX
+          else
+            ldd "$MODULE"
+            if ldd "$MODULE" | grep -i -e 'not found' -e libssl -e libcrypto; then
+              echo "::error::the module needs a library the system may not have"
+              exit 1
+            fi
+          fi
+      - name: Compress
+        run: |
+          mkdir dist
+          gzip -9 -n -c "$MODULE" > "dist/$ASSET"
+          ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: module-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: module-release
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+      # Laid out as the release is, under the URL lispm-remote-module.el
+      # derives from `lispm-remote-module-prebuilt-url'.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: module-*
+          path: releases/module-${{ needs.version.outputs.version }}
+          merge-multiple: true
+      - name: Checksums
+        working-directory: releases/module-${{ needs.version.outputs.version }}
+        run: |
+          sha256sum lispm-remote-module-* > SHA256SUMS
+          cat SHA256SUMS
+      # Pinned as a release of LispM Remote pins it, from the release laid
+      # out here: the names are the ones Emacs wants, the checksums match.
+      - name: Pin it as a release does
+        run: >-
+          emacs -Q --batch -L lisp -l lispm-remote-module
+          --eval "(setq lispm-remote-module-prebuilt-url \"file://$PWD/releases\")"
+          -f lispm-remote-module-batch-pin
+      - name: Publish
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=module-$VERSION
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is published already"
+            exit 0
+          fi
+          commit=$(git rev-parse HEAD)
+          gh release create "$tag" releases/"$tag"/* \
+            --target "$commit" --latest=false \
+            --title "Emacs module $VERSION" \
+            --notes "LispM Remote's Emacs module from $commit: a Rings Network node inside Emacs, for macOS (Apple silicon and Intel, 11 and later) and GNU/Linux (x86_64 and arm64), compressed with gzip, by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID.
+
+          LispM Remote downloads the one for its computer, and keeps it only when its SHA-256 is the one its Lisp pins in lisp/lispm-remote-module-sums.eld, which \`make pin\` writes from this release: nothing here needs to be fetched by hand."

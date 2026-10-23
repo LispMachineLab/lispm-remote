@@ -73,7 +73,7 @@
                                        (:copier nil))
   "A phone: a Rings node and the device's machine, with what it saw."
   account secret store node machine timer pairing fingerprint states failures
-  unpaired send-errors asking asked-at displays)
+  unpaired send-errors asking asked-at displays reopen)
 
 (defun lispm-remote-test--phone-start (phone)
   "Start PHONE's node with its account, and its machine from its stored
@@ -105,6 +105,9 @@ again while none came since the channel opened, as the page does."
   (when (lispm-remote-node-live-p (lispm-remote-test-phone-node phone))
     (let ((machine (lispm-remote-test-phone-machine phone)))
       (lispm-remote-test--phone-apply phone (lispm-remote-core-initiator-tick machine))
+      (when (lispm-remote-test-phone-reopen phone)
+        (setf (lispm-remote-test-phone-reopen phone) nil)
+        (lispm-remote-test--phone-apply phone (lispm-remote-core-initiator-connect machine)))
       (when (and (lispm-remote-test-phone-asking phone)
                  (lispm-remote-core-initiator-open-p machine)
                  (< (or (lispm-remote-test-phone-asked-at phone) 0) (- (float-time) 2)))
@@ -141,7 +144,13 @@ again while none came since the channel opened, as the page does."
                                   :object-type 'alist :array-type 'list)
                (lispm-remote-test-phone-states phone))))
       (`(failed . ,why)
-       (push why (lispm-remote-test-phone-failures phone))))))
+       (push why (lispm-remote-test-phone-failures phone))
+       ;; A session that could not open in time is tried again while the
+       ;; phone is paired, as the page does: the network may have lost
+       ;; every request of that try.
+       (when (and (equal why '(timed-out))
+                  (lispm-remote-test-phone-pairing phone))
+         (setf (lispm-remote-test-phone-reopen phone) t))))))
 
 (defun lispm-remote-test--last-state (phone)
   "Return the last state PHONE received."
@@ -554,7 +563,8 @@ tester, bound as BINDINGS says: (PHONE)."
   (skip-unless (lispm-remote-node-test--module-p))
   (lispm-remote-test--with-world (relay phone)
     (lispm-remote-approve (lispm-remote-test--claim phone))
-    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-pairing phone)))
+    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-pairing phone))
+                                  "pairing on the phone")
     (lispm-remote-forget (lispm-remote-node-did (lispm-remote-test-phone-node phone)))
     (should-not (lispm-remote--devices))
     ;; The phone comes back and is told it is no longer paired.
@@ -564,7 +574,14 @@ tester, bound as BINDINGS says: (PHONE)."
     (lispm-remote-node-test--connect (lispm-remote-test-phone-node phone) relay)
     (lispm-remote-test--phone-apply
      phone (lispm-remote-core-initiator-connect (lispm-remote-test-phone-machine phone)))
-    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-unpaired phone)))
+    (ert-info ((lambda ()
+                 (format "phone failures: %S\nphone send errors: %S\nLispM log:\n%s"
+                         (lispm-remote-test-phone-failures phone)
+                         (lispm-remote-test-phone-send-errors phone)
+                         (with-current-buffer (get-buffer-create lispm-remote--log-buffer)
+                           (buffer-string)))))
+      (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-unpaired phone))
+                                    "refusal of the forgotten phone"))
     (should-not (lispm-remote-test-phone-pairing phone))))
 
 (ert-deftest lispm-remote-test-keys-are-kept-private ()

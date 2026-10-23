@@ -160,9 +160,82 @@ as the page does."
           (should (stringp (cadr outcome))))
       (lispm-remote-node-stop a))))
 
-(ert-deftest lispm-remote-node-test-without-a-published-module-download-explains ()
-  (let ((lispm-remote-module-source 'download))
-    (should-error (lispm-remote-module-file) :type 'user-error)))
+(ert-deftest lispm-remote-node-test-without-a-pin-download-explains ()
+  (let* ((directory (make-temp-file "lispm-remote-pins" t))
+         (lispm-remote-module-source 'download)
+         (lispm-remote-module-sums-file (expand-file-name "sums.eld" directory))
+         (lispm-remote-module-prebuilt-directory (expand-file-name "prebuilt" directory)))
+    (unwind-protect
+        (let ((error (should-error (lispm-remote-module-file) :type 'user-error)))
+          (should (string-search "no module is pinned for these sources" (cadr error))))
+      (delete-directory directory t))))
+
+(defun lispm-remote-node-test--release (directory module)
+  "Lay out in DIRECTORY a release of these sources holding MODULE, the
+module built here, as the workflow publishes it; return its asset."
+  (let* ((target (lispm-remote-module--target))
+         (asset (lispm-remote-module--asset target))
+         (release (expand-file-name (format "module-%s" (lispm-remote-module-source-version))
+                                    directory)))
+    (make-directory release t)
+    (should (zerop (call-process-shell-command
+                    (format "gzip -9 -n -c %s > %s" (shell-quote-argument module)
+                            (shell-quote-argument (expand-file-name asset release))))))
+    (should (zerop (call-process-shell-command
+                    (format "cd %s && shasum -a 256 %s > SHA256SUMS || sha256sum %s > SHA256SUMS"
+                            (shell-quote-argument release) asset asset))))
+    (expand-file-name asset release)))
+
+(ert-deftest lispm-remote-node-test-a-published-module-is-pinned-downloaded-and-checked ()
+  (skip-unless (and (lispm-remote-node-test--module-p) (executable-find "curl")
+                    (executable-find "gzip")))
+  (let* ((directory (make-temp-file "lispm-remote-release" t))
+         (module (lispm-remote-module--built-file))
+         (target (lispm-remote-module--target))
+         (lispm-remote-module-targets (list target))
+         (lispm-remote-module-prebuilt-url (concat "file://" directory))
+         (lispm-remote-module-sums-file (expand-file-name "sums.eld" directory))
+         (lispm-remote-module-prebuilt-directory (expand-file-name "prebuilt" directory))
+         (asset (lispm-remote-node-test--release directory module))
+         (version (lispm-remote-module-source-version)))
+    (unwind-protect
+        (progn
+          ;; Pinned from the release as `make pin' pins it.
+          (with-temp-file lispm-remote-module-sums-file
+            (insert (lispm-remote-module--render-pins
+                     version (lispm-remote-module-published lispm-remote-module-prebuilt-url
+                                                            version))))
+          (should (equal (lispm-remote-module--pinned-sha256)
+                         (lispm-remote-module--sha256 asset)))
+          ;; Downloaded, checked, unpacked: the very module built here.
+          (let ((file (lispm-remote-module-download)))
+            (should (string-prefix-p lispm-remote-module-prebuilt-directory file))
+            (should (equal (lispm-remote-module--sha256 file) (lispm-remote-module--sha256 module)))
+            (let ((lispm-remote-module-source 'download))
+              (should (equal (lispm-remote-module-file) file))))
+          ;; A module changed on the release after it was pinned is refused.
+          (delete-directory lispm-remote-module-prebuilt-directory t)
+          (with-temp-file asset
+            (set-buffer-multibyte nil)
+            (insert "not the module"))
+          (let ((error (should-error (lispm-remote-module-download))))
+            (should (string-search "SHA-256 differs" (cadr error))))
+          (should-not (file-exists-p (lispm-remote-module--prebuilt-file))))
+      (delete-directory directory t))))
+
+(ert-deftest lispm-remote-node-test-a-release-missing-a-computer-is-not-pinned ()
+  (skip-unless (and (lispm-remote-node-test--module-p) (executable-find "curl")
+                    (executable-find "gzip")))
+  (let* ((directory (make-temp-file "lispm-remote-release" t))
+         (lispm-remote-module-targets (cons "x86_64-unknown-freebsd" lispm-remote-module-targets)))
+    (unwind-protect
+        (progn
+          (lispm-remote-node-test--release directory (lispm-remote-module--built-file))
+          (let ((error (should-error (lispm-remote-module-published
+                                      (concat "file://" directory)
+                                      (lispm-remote-module-source-version)))))
+            (should (string-search "has no module for" (cadr error)))))
+      (delete-directory directory t))))
 
 (ert-deftest lispm-remote-node-test-targets ()
   (should (equal (lispm-remote-module--target "aarch64-apple-darwin24.1.0") "aarch64-apple-darwin"))
