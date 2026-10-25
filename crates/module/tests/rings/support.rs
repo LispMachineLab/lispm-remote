@@ -6,6 +6,7 @@
 //! A node the test can wait on, and a way to connect two nodes without a
 //! seed: the offer and answer passed by hand.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
@@ -47,8 +48,13 @@ pub struct Peer {
 
 impl Peer {
     pub fn start() -> Self {
+        Self::start_as(&Account::generate(), None)
+    }
+
+    /// A node for `account`, its replay records kept in `store`.
+    pub fn start_as(account: &Account, store: Option<&Path>) -> Self {
         let bell = Shared::default();
-        let node = Node::start(&Account::generate(), ICE, None, bell.clone()).unwrap();
+        let node = Node::start(account, ICE, store, bell.clone()).unwrap();
         Self {
             node,
             bell,
