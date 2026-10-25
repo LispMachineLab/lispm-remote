@@ -15,12 +15,31 @@
 //!
 //! Law: `decode(encode(f)) = Ok(f)` for every frame `f`, and `decode` is
 //! total: any byte string yields a frame or a [`WireError`], never a panic.
+//!
+//! Law (versions): every version of the protocol starts its frames with
+//! `version:u8 ‖ kind:u8 ‖ channel:[u8; 16]`.  So an end that does not
+//! speak a frame's version still reads which version it is
+//! ([`WireError::Version`]) and on which channel ([`channel_of`]), and
+//! answers on that channel in its own version: the answer's first byte
+//! tells the other end which version this one speaks.  A change an older
+//! end cannot follow takes the next [`VERSION`]; the Rings namespace the
+//! frames travel under stays.
 
 use crate::ids::CHANNEL_LEN;
 use crate::ids::ChannelId;
 
 /// The protocol version every frame starts with.
 pub const VERSION: u8 = 1;
+
+/// The channel a frame of any version names: its bytes 2 to 17, or none
+/// for bytes too short to name one.
+#[must_use]
+pub fn channel_of(bytes: &[u8]) -> Option<ChannelId> {
+    bytes
+        .get(2..)
+        .and_then(<[u8]>::first_chunk::<CHANNEL_LEN>)
+        .map(|channel| ChannelId::from_bytes(*channel))
+}
 /// The longest Noise message.
 pub const MAX_NOISE_LEN: usize = 65_535;
 /// The length of an AEAD tag.
@@ -94,6 +113,9 @@ byte_enum! {
         OwnerRefused = 3,
         /// Two devices proved the offer's key, so it was dropped.
         Contested = 4,
+        /// The responder does not speak the version of the device's
+        /// frame; this frame's own first byte says which it speaks.
+        OtherVersion = 5,
     }
 }
 
@@ -370,6 +392,7 @@ mod tests {
             Just(Refusal::OfferUnavailable),
             Just(Refusal::OwnerRefused),
             Just(Refusal::Contested),
+            Just(Refusal::OtherVersion),
         ]
     }
 
@@ -440,6 +463,25 @@ mod tests {
         let mut huge = header(3);
         huge.extend(core::iter::repeat_n(0, MAX_NOISE_LEN + 1));
         assert_eq!(Frame::decode(&huge), Err(WireError::Oversized));
+    }
+
+    #[test]
+    fn a_frame_of_any_version_names_its_channel() {
+        let channel = ChannelId::from_bytes([7; CHANNEL_LEN]);
+        let ours = Frame::Refuse {
+            channel,
+            reason: Refusal::OtherVersion,
+        }
+        .encode();
+        assert_eq!(channel_of(&ours), Some(channel));
+        // Another version's frame keeps the header, whatever follows it.
+        let mut theirs = ours.clone();
+        theirs[0] = VERSION + 1;
+        theirs.extend_from_slice(b"what a later version adds");
+        assert_eq!(Frame::decode(&theirs), Err(WireError::Version(VERSION + 1)));
+        assert_eq!(channel_of(&theirs), Some(channel));
+        assert_eq!(channel_of(&ours[..CHANNEL_LEN + 1]), None);
+        assert_eq!(channel_of(&[]), None);
     }
 
     #[test]

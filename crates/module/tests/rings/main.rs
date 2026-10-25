@@ -6,8 +6,8 @@
 //! Real Rings nodes in this process, connected over WebRTC on this
 //! computer: frames between two of them (`two_nodes`); LispM Remote's
 //! pairing and sessions carried by the network, relayed by a third node
-//! (`remote`); and the same over the public network, when asked
-//! (`public`).
+//! (`remote`); the same over the public network, when asked (`public`);
+//! and what a node of another Rings version says (`versions`).
 //!
 //! The modules are `cfg(test)` items, so clippy's test allowances reach
 //! their helpers.
@@ -20,3 +20,5 @@ mod remote;
 mod support;
 #[cfg(test)]
 mod two_nodes;
+#[cfg(test)]
+mod versions;
