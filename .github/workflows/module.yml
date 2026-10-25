@@ -34,6 +34,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # lispm-prebuilt, which downloads the module.
+      - uses: actions/checkout@v7
+        with:
+          repository: LispMachineLab/lispm-prebuilt
+          path: .deps/lispm-prebuilt
       - uses: Swatinem/rust-cache@v2
       - uses: purcell/setup-emacs@v8.0
         with:
@@ -41,6 +46,6 @@ jobs:
       - name: Lint
         run: cargo clippy -p lispm-remote-module --all-targets -- -D warnings
       - name: Byte-compile
-        run: make compile
+        run: make compile LISPM_PREBUILT=.deps/lispm-prebuilt
       - name: Test
-        run: make test
+        run: make test LISPM_PREBUILT=.deps/lispm-prebuilt

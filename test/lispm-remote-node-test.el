@@ -40,8 +40,8 @@ up to about half a minute to give up.")
 (defun lispm-remote-node-test--module-p ()
   "Return non-nil when the built module can be loaded."
   (let ((lispm-remote-module-source 'build))
-    (and (ignore-errors (lispm-remote-module--built-file))
-         (file-readable-p (lispm-remote-module--built-file))
+    (and (ignore-errors (lispm-prebuilt-built-file 'lispm-remote-module))
+         (file-readable-p (lispm-prebuilt-built-file 'lispm-remote-module))
          (progn (lispm-remote-module-load) t))))
 
 (defun lispm-remote-node-test--wait (predicate &optional what)
@@ -173,8 +173,8 @@ as the page does."
 (defun lispm-remote-node-test--release (directory module)
   "Lay out in DIRECTORY a release of these sources holding MODULE, the
 module built here, as the workflow publishes it; return its asset."
-  (let* ((target (lispm-remote-module--target))
-         (asset (lispm-remote-module--asset target))
+  (let* ((target (lispm-prebuilt-target 'lispm-remote-module))
+         (asset (lispm-prebuilt-asset 'lispm-remote-module target))
          (release (expand-file-name (format "module-%s" (lispm-remote-module-source-version))
                                     directory)))
     (make-directory release t)
@@ -190,8 +190,8 @@ module built here, as the workflow publishes it; return its asset."
   (skip-unless (and (lispm-remote-node-test--module-p) (executable-find "curl")
                     (executable-find "gzip")))
   (let* ((directory (make-temp-file "lispm-remote-release" t))
-         (module (lispm-remote-module--built-file))
-         (target (lispm-remote-module--target))
+         (module (lispm-prebuilt-built-file 'lispm-remote-module))
+         (target (lispm-prebuilt-target 'lispm-remote-module))
          (lispm-remote-module-targets (list target))
          (lispm-remote-module-prebuilt-url (concat "file://" directory))
          (lispm-remote-module-sums-file (expand-file-name "sums.eld" directory))
@@ -202,15 +202,15 @@ module built here, as the workflow publishes it; return its asset."
         (progn
           ;; Pinned from the release as `make pin' pins it.
           (with-temp-file lispm-remote-module-sums-file
-            (insert (lispm-remote-module--render-pins
-                     version (lispm-remote-module-published lispm-remote-module-prebuilt-url
+            (insert (lispm-prebuilt-render-pins
+                     'lispm-remote-module version (lispm-remote-module-published lispm-remote-module-prebuilt-url
                                                             version))))
-          (should (equal (lispm-remote-module--pinned-sha256)
-                         (lispm-remote-module--sha256 asset)))
+          (should (equal (lispm-prebuilt-pinned-sha256 'lispm-remote-module)
+                         (lispm-prebuilt-sha256 asset)))
           ;; Downloaded, checked, unpacked: the very module built here.
           (let ((file (lispm-remote-module-download)))
             (should (string-prefix-p lispm-remote-module-prebuilt-directory file))
-            (should (equal (lispm-remote-module--sha256 file) (lispm-remote-module--sha256 module)))
+            (should (equal (lispm-prebuilt-sha256 file) (lispm-prebuilt-sha256 module)))
             (let ((lispm-remote-module-source 'download))
               (should (equal (lispm-remote-module-file) file))))
           ;; A module changed on the release after it was pinned is refused.
@@ -220,7 +220,7 @@ module built here, as the workflow publishes it; return its asset."
             (insert "not the module"))
           (let ((error (should-error (lispm-remote-module-download))))
             (should (string-search "SHA-256 differs" (cadr error))))
-          (should-not (file-exists-p (lispm-remote-module--prebuilt-file))))
+          (should-not (file-exists-p (lispm-prebuilt-prebuilt-file 'lispm-remote-module))))
       (delete-directory directory t))))
 
 (ert-deftest lispm-remote-node-test-a-release-missing-a-computer-is-not-pinned ()
@@ -230,7 +230,7 @@ module built here, as the workflow publishes it; return its asset."
          (lispm-remote-module-targets (cons "x86_64-unknown-freebsd" lispm-remote-module-targets)))
     (unwind-protect
         (progn
-          (lispm-remote-node-test--release directory (lispm-remote-module--built-file))
+          (lispm-remote-node-test--release directory (lispm-prebuilt-built-file 'lispm-remote-module))
           (let ((error (should-error (lispm-remote-module-published
                                       (concat "file://" directory)
                                       (lispm-remote-module-source-version)))))
@@ -238,10 +238,10 @@ module built here, as the workflow publishes it; return its asset."
       (delete-directory directory t))))
 
 (ert-deftest lispm-remote-node-test-targets ()
-  (should (equal (lispm-remote-module--target "aarch64-apple-darwin24.1.0") "aarch64-apple-darwin"))
-  (should (equal (lispm-remote-module--target "x86_64-pc-linux-gnu") "x86_64-unknown-linux-gnu"))
-  (should (equal (lispm-remote-module--target "aarch64-unknown-linux-gnu") "aarch64-unknown-linux-gnu"))
-  (should-not (lispm-remote-module--target "riscv64-unknown-linux-gnu")))
+  (should (equal (lispm-prebuilt-target 'lispm-remote-module "aarch64-apple-darwin24.1.0") "aarch64-apple-darwin"))
+  (should (equal (lispm-prebuilt-target 'lispm-remote-module "x86_64-pc-linux-gnu") "x86_64-unknown-linux-gnu"))
+  (should (equal (lispm-prebuilt-target 'lispm-remote-module "aarch64-unknown-linux-gnu") "aarch64-unknown-linux-gnu"))
+  (should-not (lispm-prebuilt-target 'lispm-remote-module "riscv64-unknown-linux-gnu")))
 
 (provide 'lispm-remote-node-test)
 ;;; lispm-remote-node-test.el ends here

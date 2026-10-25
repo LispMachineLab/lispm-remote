@@ -13,13 +13,15 @@
 #   make check-pins   check the pins against the release
 
 EMACS ?= emacs
+# lispm-prebuilt, which downloads the module: a checkout beside this one.
+LISPM_PREBUILT ?= ../lispm-prebuilt
 CARGO ?= cargo
 NPM ?= npm
 WASM_PACK ?= wasm-pack
 PYTHON ?= python3
 PORT ?= 8000
 TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
-EMACS_BATCH = $(EMACS) -Q --batch -L lisp
+EMACS_BATCH = $(EMACS) -Q --batch -L lisp -L $(LISPM_PREBUILT)
 PAGE = web/dist
 RINGS = web/node_modules/@ringsnetwork/rings-node/dist
 
@@ -81,7 +83,7 @@ test/e2e/node_modules/.package-lock.json: test/e2e/package.json test/e2e/package
 	cd test/e2e && $(NPM) ci --no-audit --no-fund && npx playwright install chromium
 
 e2e: module page test/e2e/node_modules/.package-lock.json
-	sudo test/e2e/run.sh
+	sudo LISPM_PREBUILT=$(abspath $(LISPM_PREBUILT)) test/e2e/run.sh
 
 pin:
 	$(EMACS_BATCH) -l lispm-remote-module -f lispm-remote-module-batch-pin
