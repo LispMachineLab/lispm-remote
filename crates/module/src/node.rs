@@ -95,6 +95,11 @@ pub enum Event {
         id: u64,
         /// Why, as Rings put it.
         error: String,
+        /// The data of the JSON-RPC error a request failed with, as JSON,
+        /// when Rings gave one: for a peer of another wire version,
+        /// `{"ours": n, "theirs": m}`, `m` null for a peer from before wire
+        /// versioning.
+        data: Option<String>,
     },
     /// Frames were dropped because Emacs did not collect events in time.
     Lost {
@@ -104,6 +109,24 @@ pub enum Event {
 }
 
 impl Event {
+    /// The failure of the work `id` with `error`.  A request's error comes
+    /// back from Rings's internal JSON-RPC handler, which keeps the data of
+    /// the error the call failed with; its text alone would lose it.
+    #[must_use]
+    pub fn failed(id: u64, error: &rings_node::error::Error) -> Self {
+        let data = match error {
+            rings_node::error::Error::InternalRpcError(failure) => {
+                failure.data.as_ref().map(ToString::to_string)
+            }
+            _ => None,
+        };
+        Self::Failed {
+            id,
+            error: error.to_string(),
+            data,
+        }
+    }
+
     /// Whether Emacs is waiting for this event in particular.
     const fn answers_emacs(&self) -> bool {
         matches!(
@@ -359,10 +382,7 @@ impl Node {
         self.spawn(async move {
             match provider.send(to, NAMESPACE, Bytes::from(payload)).await {
                 Ok(()) => Event::Sent { id },
-                Err(error) => Event::Failed {
-                    id,
-                    error: error.to_string(),
-                },
+                Err(error) => Event::failed(id, &error),
             }
         });
         Ok(id)
@@ -386,10 +406,7 @@ impl Node {
                     id,
                     result: result.to_string(),
                 },
-                Err(error) => Event::Failed {
-                    id,
-                    error: error.to_string(),
-                },
+                Err(error) => Event::failed(id, &error),
             }
         });
         Ok(id)
@@ -506,6 +523,36 @@ mod tests {
             node.unwrap().stop();
         }
         std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn a_failure_keeps_the_data_of_its_json_rpc_error() {
+        use rings_core::message::PeerWireVersion;
+        use rings_core::message::WireVersionMismatch;
+        use rings_node::error::Error;
+
+        // A request refused as the node's JSON-RPC handler refuses it.
+        let mismatch = Error::IncompatibleWireVersion(WireVersionMismatch {
+            ours: 1,
+            theirs: PeerWireVersion::BeforeVersioning,
+        });
+        let refusal = Error::InternalRpcError(mismatch.into());
+        assert_eq!(
+            Event::failed(3, &refusal),
+            Event::Failed {
+                id: 3,
+                error: "Internal rpc services error: Server error: Incompatible wire version: ours is 1, the peer's is from before wire versioning..".to_owned(),
+                data: Some(r#"{"ours":1,"theirs":null}"#.to_owned()),
+            }
+        );
+        assert_eq!(
+            Event::failed(4, &Error::ConnectionNotFound),
+            Event::Failed {
+                id: 4,
+                error: "Connection not found.".to_owned(),
+                data: None,
+            }
+        );
     }
 
     #[test]

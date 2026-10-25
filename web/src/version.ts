@@ -6,14 +6,15 @@
 /**
  * Two ends may run another version than this page:
  *
- * - The seed.  This Rings's handshake carries no version: a seed of another
- *   Rings version only fails to read the page's offer, or the page its
- *   answer.  A seed whose handshake carries a wire version
- *   (RingsNetwork/rings#1106) refuses the page by name instead, and its
- *   words say which side is older (`ringsOlder`).  Joining again fails the
- *   same way, and a seed refuses an address that keeps trying (429), so the
- *   page leaves the seed alone for `MISMATCH_MS` and says what it
- *   concluded.
+ * - The seed.  Rings's handshake carries a wire version since 0.37
+ *   (RingsNetwork/rings#1104).  The page's node reads the seed's from its
+ *   `nodeDid` before it offers, and refuses a seed of another wire version
+ *   in words that name both (`ringsOlder`); the browser's node passes on
+ *   only the words, not the JSON-RPC error's data.  A seed from before wire
+ *   versioning, 0.36 or older, may also fail to read the offer, or the page
+ *   its answer.  Joining again fails the same way, and a seed refuses an
+ *   address that keeps trying (429), so the page leaves the seed alone for
+ *   `MISMATCH_MS` and says what it concluded.
  * - LispM.  Every frame starts with the version of LispM Remote's protocol
  *   it is in; the device's machine fails with `other-version` when LispM
  *   answers in another, and the page stops there.
@@ -53,11 +54,11 @@ export function ringsMismatch(message: string | null): boolean {
 /** The side whose Rings the join failure `message` says is older.
  *
  * A node with a wire version names two in its refusal, "Incompatible wire
- * version: ours is 1, the peer's is from before wire versioning": its own,
- * and the other end's, a number or, oldest of all, from before wire
- * versioning.  The refusal is the seed's when it comes after "Server
- * returned rpc error", as this Rings words a seed's answer, and the page's
- * own otherwise. */
+ * version: ours is n, the peer's is m": its own, and the other end's, a
+ * number or, oldest of all, "from before wire versioning".  Since Rings
+ * 0.37 the page's node states a seed's refusal as its own, so "ours" is the
+ * page's.  A refusal after "Server returned rpc error" is the seed's, as
+ * Rings 0.36 relayed it, so there "ours" is the seed's. */
 export function ringsOlder(message: string | null): "ours" | "seed" | null {
   const refusal =
     /Incompatible wire version: ours is (\d+), the peer's is (\d+|from before wire versioning)/.exec(
@@ -69,15 +70,16 @@ export function ringsOlder(message: string | null): "ours" | "seed" | null {
   const refusing = Number(refusal[1]);
   // From before wire versioning counts as 0, below every version.
   const other = /^\d+$/.test(refusal[2] ?? "") ? Number(refusal[2]) : 0;
-  if (other === refusing) {
-    return null;
-  }
-  if (/Server returned rpc error[^:]*: Incompatible wire version/.test(message ?? "")) {
-    // The other end is the page.
-    return other < refusing ? "ours" : "seed";
-  }
-  // The other end is the seed.
-  return other < refusing ? "seed" : "ours";
+  return /Server returned rpc error[^:]*: Incompatible wire version/.test(message ?? "")
+    ? older(other, refusing)
+    : older(refusing, other);
+}
+
+/** The side whose wire version is older, from the page's `ours` and the
+ * seed's `theirs`, 0 from before wire versioning; null when they are the
+ * same. */
+function older(ours: number, theirs: number): "ours" | "seed" | null {
+  return ours < theirs ? "ours" : ours > theirs ? "seed" : null;
 }
 
 /** What the page concludes from the seed `seed` running another Rings
