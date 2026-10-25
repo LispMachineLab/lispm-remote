@@ -28,6 +28,7 @@ mod display;
 mod lisp;
 mod machines;
 pub mod node;
+mod store;
 
 pub use node::Account;
 pub use node::Event;
