@@ -48,6 +48,7 @@ import {
   leftAlone,
   peerConclusion,
   ringsMismatch,
+  ringsOlder,
   seedConclusion,
   versionNumber,
 } from "./version.js";
@@ -262,8 +263,9 @@ export class Remote {
   /** The Rings version this page's node runs, once known. */
   rings: string | null = null;
   /** When a join last failed because the seed runs another Rings version,
-   * or 0. */
+   * or 0, and the side whose Rings that failure said is older. */
   mismatchAt = 0;
+  mismatchOlder: "ours" | "seed" | null = null;
   /** The protocol versions of LispM and of this page, once LispM answered
    * in another. */
   otherVersion: { readonly theirs: number; readonly ours: number } | null = null;
@@ -388,7 +390,7 @@ export class Remote {
    * while it leaves the seed alone. */
   seedProblem(): string | null {
     return this.peers === 0 && this.mismatched()
-      ? seedConclusion(this.seed, this.rings)
+      ? seedConclusion(this.seed, this.rings, this.mismatchOlder)
       : null;
   }
 
@@ -635,7 +637,8 @@ export class Remote {
       this.joinAttempts++;
       if (ringsMismatch(this.joinError)) {
         this.mismatchAt = Date.now();
-        console.warn(`lispm-remote: ${seedConclusion(this.seed, this.rings)}`);
+        this.mismatchOlder = ringsOlder(this.joinError);
+        console.warn(`lispm-remote: ${seedConclusion(this.seed, this.rings, this.mismatchOlder)}`);
       }
       await this.release(this.joinError);
     }
