@@ -10,6 +10,7 @@
 mod pairing;
 mod schedules;
 mod sessions;
+mod versions;
 
 use crate::ChannelId;
 use crate::DeviceName;

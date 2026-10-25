@@ -181,6 +181,14 @@ pub enum Effect {
         /// Why.
         why: Discard,
     },
+    /// A frame came in another version of the protocol, and its sender
+    /// was told this end's.
+    OtherVersion {
+        /// Its sender.
+        from: PeerId,
+        /// The version the sender speaks.
+        version: u8,
+    },
 }
 
 /// How an offer ended.

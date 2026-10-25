@@ -89,16 +89,26 @@ impl Peer {
 
     /// The result of the request `method` with `params`.
     pub fn ask(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        match self.request(method, params) {
+            Ok(result) => result,
+            Err(error) => panic!("{method} failed: {error}"),
+        }
+    }
+
+    /// The result of the request `method` with `params`, or why it failed,
+    /// as Rings put it.
+    pub fn request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let id = self.node.request(method, &params.to_string()).unwrap();
         let reply = self.next(|event| match event {
             Event::Reply { id: got, result } if *got == id => Some(Ok(result.clone())),
             Event::Failed { id: got, error } if *got == id => Some(Err(error.clone())),
             _ => None,
         });
-        match reply {
-            Ok(result) => serde_json::from_str(&result).unwrap(),
-            Err(error) => panic!("{method} failed: {error}"),
-        }
+        reply.map(|result| serde_json::from_str(&result).unwrap())
     }
 
     pub fn connected_to(&mut self, other: &str) -> bool {

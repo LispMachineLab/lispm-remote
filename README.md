@@ -79,6 +79,25 @@ What happens when the network drops:
 - **Coming back.** A node that comes back while its old connection still looks alive is refused until
   that connection times out, about five seconds. The device keeps offering until then.
 
+When the other end runs another version, LispM Remote says so after the first failure, in Emacs's
+window and in the page's steps, and stops trying:
+
+- **The seed.** Rings's handshake carries no version, and a seed tells its version only to its operator.
+  A seed of another Rings version fails to read the node's offer ("Answer offer info failed: Codec
+  deserialization error"), or the node fails to read its answer ("Decode error"). LispM Remote takes
+  those words for a version mismatch and says, for example, "node.rings.rs runs another Rings version
+  than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0." It
+  names its own Rings from the node's `nodeInfo`. Which side is older it cannot say until Rings's
+  handshake carries the version. It then leaves that seed alone for half an hour
+  (`lispm-remote-mismatch-seconds`), so a seed that refuses addresses that keep asking (429) does not
+  refuse this one. Turning LispM Remote off and on in Emacs, or reloading the page, tries at once.
+- **LispM and the page.** Every frame starts with the version of LispM Remote's protocol it is in, and
+  every version keeps the frame's header (version, kind, channel). An end that gets a frame of another
+  version answers on its channel in its own version, so the other end learns which it speaks. Emacs
+  names the device and says which side is older ("Update LispM Remote", or "Reload the page on it");
+  the page fails its Reach step the same way and opens no session until it reloads or scans a new code.
+  A change an older end cannot follow takes the next protocol version.
+
 ## Talking to agents from another device
 
 On the page, each agent is a chat, as with Grok or Meta AI: you write to it, its answer streams
