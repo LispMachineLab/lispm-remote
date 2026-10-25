@@ -9,14 +9,19 @@
  * cannot be read out), its static secret ("static", hexadecimal) and its
  * pairing ("pairing", the `{responder, key}` of the machine's `paired`
  * effect).  The Rings node keeps its replay records beside them, under
- * "lispm-remote/rings".
+ * "lispm-remote/rings", in the format "replayFormat" names.
  */
 
 const DATABASE = "lispm-remote";
 const STORE = "keys";
 
+/** The replay record format this page's Rings writes.  Rings 0.35 changed
+ * it (RingsNetwork/rings#936): a store of an earlier format decodes no
+ * record, so every stream would fail closed. */
+const REPLAY_FORMAT = "rings-0.35";
+
 /** What the store holds. */
-export type Key = "account" | "static" | "pairing";
+export type Key = "account" | "static" | "pairing" | "replayFormat";
 
 function result<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -66,5 +71,16 @@ export class Store {
     const transaction = this.db.transaction(STORE, "readwrite");
     transaction.objectStore(STORE).delete(key);
     await committed(transaction);
+  }
+
+  /** Removes the replay store of the Rings node kept under `rings` when it
+   * was written in another format than `REPLAY_FORMAT`, before the node
+   * opens it.  Rings resets each stream's replay window then, as clearing
+   * a stream does.  It is removed before the format is noted, so a page
+   * closed in between removes it again. */
+  async prepareReplay(rings: string): Promise<void> {
+    if ((await this.get<string>("replayFormat")) === REPLAY_FORMAT) return;
+    await result(indexedDB.deleteDatabase(`${rings}/transaction-replay`));
+    await this.put("replayFormat", REPLAY_FORMAT);
   }
 }

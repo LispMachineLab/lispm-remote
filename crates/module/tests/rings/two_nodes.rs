@@ -6,6 +6,7 @@
 //! Two nodes connect directly and exchange frames under LispM Remote's
 //! namespace.
 
+use lispm_remote_module::Account;
 use lispm_remote_module::Event;
 
 use crate::support::Peer;
@@ -24,6 +25,24 @@ fn two_nodes_connect_and_exchange_frames_both_ways() {
 
     a.node.stop();
     b.node.stop();
+}
+
+#[test]
+fn a_node_that_talked_lets_its_store_open_again_once_stopped() {
+    // Rings locks a store while it is open (RingsNetwork/rings#1039), and
+    // Emacs starts a stopped node again in the same process.
+    let store = std::env::temp_dir().join(format!("lispm-remote-talked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&store);
+    let account = Account::generate();
+    let mut a = Peer::start_as(&account, Some(&store));
+    let mut b = Peer::start();
+    connect(&mut a, &mut b);
+    a.send(&b.did(), b"before".to_vec());
+    assert_eq!(b.frame_from(&a.did()), b"before");
+    a.node.stop();
+    Peer::start_as(&account, Some(&store)).node.stop();
+    b.node.stop();
+    std::fs::remove_dir_all(&store).unwrap();
 }
 
 #[test]
