@@ -238,8 +238,10 @@ before the first check.")
   "The Rings version this Emacs's node runs, as \"0.36.0\", once known.")
 
 (defvar lispm-remote--mismatches nil
-  "The seeds that run another Rings version: an alist of (SEED . TIME),
-TIME when a join through SEED last failed so.")
+  "The seeds that run another Rings version: a list of (SEED TIME OLDER),
+TIME when a join through SEED last failed so, and OLDER the side whose
+Rings the failure said is older, `ours' or `seed', or nil when it did
+not say.")
 
 (defvar lispm-remote--peer-versions nil
   "The devices heard speaking another version of LispM Remote's protocol:
@@ -397,20 +399,20 @@ ran another Rings version lately."
              (t
               (lispm-remote--log "joining through %s failed: %s" seed error)
               (when (lispm-remote-rings-mismatch-p error)
-                (lispm-remote--mismatch seed))))))))
+                (lispm-remote--mismatch seed error))))))))
 
 ;;;; Versions
 
 ;; Each end LispM Remote talks to may run another version than this one.
 ;;
-;; - The seed.  Rings's handshake carries no version: a seed of another
-;;   Rings version only fails to read this node's offer, or this node its
-;;   answer, and says so in words `lispm-remote-rings-mismatch-p' knows.
-;;   Joining again would fail the same way, and a seed refuses an address
-;;   that keeps trying, so LispM Remote leaves it alone for
-;;   `lispm-remote-mismatch-seconds' and says what it concluded.  Which
-;;   side is older it cannot tell until Rings's handshake carries the
-;;   version.
+;; - The seed.  This Rings's handshake carries no version: a seed of
+;;   another Rings version only fails to read this node's offer, or this
+;;   node its answer.  A seed whose handshake carries a wire version
+;;   (RingsNetwork/rings#1106) refuses this node by name instead, and its
+;;   words say which side is older (`lispm-remote--rings-older').  Joining
+;;   again would fail the same way, and a seed refuses an address that
+;;   keeps trying, so LispM Remote leaves it alone for
+;;   `lispm-remote-mismatch-seconds' and says what it concluded.
 ;; - A device.  Every frame starts with the version of LispM Remote's
 ;;   protocol it is in.  The machine answers a frame of another version in
 ;;   this one, so the device learns which this one speaks, and says which
@@ -429,21 +431,46 @@ releases are tagged \"v0.36.0\"."
 that the seed runs another Rings version.
 A seed that cannot read this node's offer answers \"Answer offer info
 failed: Codec deserialization error\"; this node fails to read a seed's
-answer with \"Decode error\"."
+answer with \"Decode error\"; a seed with a wire version refuses one from
+before wire versioning with \"Incompatible wire version\"."
   (and (stringp error)
-       (string-match-p "Codec deserialization error\\|\\bDecode error\\b" error)))
+       (string-match-p
+        "Codec deserialization error\\|\\bDecode error\\b\\|Incompatible wire version" error)))
+
+(defun lispm-remote--rings-older (error)
+  "Return the side whose Rings ERROR says is older, `ours' or `seed', or
+nil when it does not say.
+A node with a wire version names two in its refusal, \"Incompatible wire
+version: ours is 1, the peer's is from before wire versioning\": its own,
+and the other end's, a number or, oldest of all, from before wire
+versioning.  The refusal is the seed's when it comes after \"Server
+returned rpc error\", as this Rings words a seed's answer, and this
+node's otherwise."
+  (when (and (stringp error)
+             (string-match "Incompatible wire version: ours is \\([0-9]+\\), the peer's is \\([0-9]+\\|from before wire versioning\\)"
+                           error))
+    (let ((refusing (string-to-number (match-string 1 error)))
+          ;; From before wire versioning reads as 0, below every version.
+          (other (string-to-number (match-string 2 error)))
+          (by-seed (string-match-p "Server returned rpc error[^:]*: Incompatible wire version" error)))
+      (cond ((= other refusing) nil)
+            ;; The other end is this node.
+            (by-seed (if (< other refusing) 'ours 'seed))
+            ;; The other end is the seed.
+            (t (if (< other refusing) 'seed 'ours))))))
 
 (defun lispm-remote--mismatched-p (seed)
   "Return non-nil when SEED ran another Rings version less than
 `lispm-remote-mismatch-seconds' ago."
-  (when-let* ((at (alist-get seed lispm-remote--mismatches nil nil #'equal)))
+  (when-let* ((at (car (alist-get seed lispm-remote--mismatches nil nil #'equal))))
     (< (- (float-time) at) lispm-remote-mismatch-seconds)))
 
-(defun lispm-remote--mismatch (seed)
-  "Note that SEED runs another Rings version, and tell the owner the
-first time."
+(defun lispm-remote--mismatch (seed error)
+  "Note that SEED runs another Rings version, as ERROR said, and tell the
+owner the first time."
   (let ((again (assoc seed lispm-remote--mismatches)))
-    (setf (alist-get seed lispm-remote--mismatches nil nil #'equal) (float-time))
+    (setf (alist-get seed lispm-remote--mismatches nil nil #'equal)
+          (list (float-time) (lispm-remote--rings-older error)))
     (unless again
       (message "LispM Remote: %s" (lispm-remote--seed-conclusion seed)))
     (lispm-remote--refresh)))
@@ -454,14 +481,22 @@ first time."
 
 (defun lispm-remote--seed-conclusion (seed)
   "Return what LispM Remote concludes from SEED running another Rings
-version, and what to do.  Which side is older the seed does not say."
+version, and what to do: which side is older, when the failure said."
   (let ((host (lispm-remote--host seed))
-        (ours lispm-remote--rings))
-    (if ours
-        (format "%s runs another Rings version than this LispM Remote (%s). Update LispM Remote, or join through a seed of Rings %s."
-                host ours ours)
-      (format "%s runs another Rings version than this LispM Remote. Update LispM Remote, or join through another seed."
-              host))))
+        (ours lispm-remote--rings)
+        (older (nth 1 (alist-get seed lispm-remote--mismatches nil nil #'equal))))
+    (cond ((eq older 'ours)
+           (format "%s runs a newer Rings than this LispM Remote%s. Update LispM Remote."
+                   host (if ours (format " (%s)" ours) "")))
+          ((eq older 'seed)
+           (format "%s runs an older Rings than this LispM Remote%s. Join through another seed."
+                   host (if ours (format " (%s)" ours) "")))
+          (ours
+           (format "%s runs another Rings version than this LispM Remote (%s). Update LispM Remote, or join through a seed of Rings %s."
+                   host ours ours))
+          (t
+           (format "%s runs another Rings version than this LispM Remote. Update LispM Remote, or join through another seed."
+                   host)))))
 
 (defun lispm-remote--other-version (peer version ours)
   "Note that PEER speaks VERSION of the protocol, this end OURS, and tell

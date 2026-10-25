@@ -983,6 +983,14 @@ node.rings.rs once it ran Rings 0.36.0, word for word.  The module's
 test `a_seed_of_another_rings_version_cannot_read_the_offer' holds Rings
 to the words that tell it.")
 
+(defconst lispm-remote-test--refused
+  "Internal rpc services error: Server error: Connect remote rpc server failed: Server returned rpc error Server error: Incompatible wire version: ours is 1, the peer's is from before wire versioning..."
+  "Why this LispM Remote cannot join through a seed whose handshake
+carries a wire version (RingsNetwork/rings#1106), word for word.  The
+seed's JSON-RPC code and data do not come through; the module's test
+`a_seed_with_a_wire_version_refuses_this_node_in_words' holds Rings to
+these words, from a stand-in seed.")
+
 (defconst lispm-remote-test--phone-did "0x2222222222222222222222222222222222222222"
   "The DID of a device in the tests of versions.")
 
@@ -1012,6 +1020,7 @@ were on, off the network: no node, no seed joined."
 
 (ert-deftest lispm-remote-test-a-seed-of-another-rings-is-told-by-its-words ()
   (should (lispm-remote-rings-mismatch-p lispm-remote-test--mismatch))
+  (should (lispm-remote-rings-mismatch-p lispm-remote-test--refused))
   ;; This node reading a seed's answer it cannot decode.
   (should (lispm-remote-rings-mismatch-p "Internal rpc services error: Server error: Decode error.."))
   (dolist (other '("Internal rpc services error: Server error: a handshake with 0x50e92c90d7a57bd01f4184eda98f87c382da4e61 is already in flight.."
@@ -1053,14 +1062,14 @@ step, and LispM Remote stops joining through that seed for a while."
         (should (= joins 1))
         ;; Once the wait is over, LispM Remote tries once more.
         (setf (alist-get "https://seed.example" lispm-remote--mismatches nil nil #'equal)
-              (- (float-time) lispm-remote-mismatch-seconds 1))
+              (list (- (float-time) lispm-remote-mismatch-seconds 1) nil))
         (lispm-remote--join)
         (should (= joins 2))
         (lispm-remote--join)
         (should (= joins 2))
         ;; A seed that lets it join is no longer named.
         (setf (alist-get "https://seed.example" lispm-remote--mismatches nil nil #'equal)
-              (- (float-time) lispm-remote-mismatch-seconds 1)
+              (list (- (float-time) lispm-remote-mismatch-seconds 1) nil)
               answer nil)
         (lispm-remote--join)
         (should (= joins 3))
@@ -1087,13 +1096,60 @@ step, and LispM Remote stops joining through that seed for a while."
         (should (eq (alist-get 'join (lispm-remote--progress '(:token "t"))) 'active))))))
 
 (ert-deftest lispm-remote-test-a-seed-conclusion-names-this-rings ()
-  (let ((lispm-remote--rings "0.36.0"))
+  (let ((lispm-remote--rings "0.36.0")
+        (lispm-remote--mismatches nil))
     (should (equal (lispm-remote--seed-conclusion "https://node.rings.rs/")
-                   "node.rings.rs runs another Rings version than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0.")))
+                   "node.rings.rs runs another Rings version than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0."))
+    ;; When the failure said which side is older.
+    (setq lispm-remote--mismatches `(("https://node.rings.rs" ,(float-time) ours)))
+    (should (equal (lispm-remote--seed-conclusion "https://node.rings.rs")
+                   "node.rings.rs runs a newer Rings than this LispM Remote (0.36.0). Update LispM Remote."))
+    (setq lispm-remote--mismatches `(("https://node.rings.rs" ,(float-time) seed)))
+    (should (equal (lispm-remote--seed-conclusion "https://node.rings.rs")
+                   "node.rings.rs runs an older Rings than this LispM Remote (0.36.0). Join through another seed.")))
   ;; Before the node said which Rings it runs.
-  (let ((lispm-remote--rings nil))
+  (let ((lispm-remote--rings nil)
+        (lispm-remote--mismatches nil))
     (should (equal (lispm-remote--seed-conclusion "https://node.rings.rs")
                    "node.rings.rs runs another Rings version than this LispM Remote. Update LispM Remote, or join through another seed."))))
+
+(ert-deftest lispm-remote-test-a-refusal-says-which-rings-is-older ()
+  ;; A seed with a wire version refusing this node, from before wire
+  ;; versioning: this node's Rings is older.
+  (should (eq (lispm-remote--rings-older lispm-remote-test--refused) 'ours))
+  ;; Seeds and nodes of two wire versions, either refusing.
+  (let ((seed "Internal rpc services error: Server error: Connect remote rpc server failed: Server returned rpc error Server error: Incompatible wire version: ours is %d, the peer's is %d..")
+        (node "Internal rpc services error: Server error: Incompatible wire version: ours is %d, the peer's is %d.."))
+    (should (eq (lispm-remote--rings-older (format seed 2 1)) 'ours))
+    (should (eq (lispm-remote--rings-older (format seed 1 2)) 'seed))
+    (should (eq (lispm-remote--rings-older (format node 2 1)) 'seed))
+    (should (eq (lispm-remote--rings-older (format node 1 2)) 'ours))
+    (should-not (lispm-remote--rings-older (format node 2 2))))
+  ;; This node refusing a seed from before wire versioning.
+  (should (eq (lispm-remote--rings-older "Internal rpc services error: Server error: Incompatible wire version: ours is 1, the peer's is from before wire versioning..")
+              'seed))
+  ;; A codec error says nothing of which is older.
+  (should-not (lispm-remote--rings-older lispm-remote-test--mismatch))
+  (should-not (lispm-remote--rings-older nil)))
+
+(ert-deftest lispm-remote-test-a-seed-with-a-wire-version-is-named-newer ()
+  "A seed whose handshake carries a wire version refuses this node by
+name: one failed join says that this LispM Remote is the older, and the
+seed is left alone."
+  (lispm-remote-test--with-home
+    (let ((lispm-remote-seeds '("https://node.rings.rs"))
+          (joins 0))
+      (cl-letf (((symbol-function 'lispm-remote-node-connect)
+                 (lambda (_node _seed callback)
+                   (cl-incf joins)
+                   (funcall callback nil lispm-remote-test--refused))))
+        (lispm-remote--join)
+        (lispm-remote--join)
+        (should (= joins 1))
+        (let ((home (lispm-remote-test--home-text)))
+          (should (string-search "✖ node.rings.rs runs a newer Rings than this LispM Remote (0.36.0). Update LispM Remote." home))
+          (should (string-search "leaves node.rings.rs alone for 30 minutes" home)))
+        (should (eq (alist-get 'join (lispm-remote--progress '(:token "t"))) 'failed))))))
 
 (ert-deftest lispm-remote-test-a-device-of-another-version-is-named ()
   (lispm-remote-test--with-home

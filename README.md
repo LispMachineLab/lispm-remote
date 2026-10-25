@@ -82,13 +82,18 @@ What happens when the network drops:
 When the other end runs another version, LispM Remote says so after the first failure, in Emacs's
 window and in the page's steps, and stops trying:
 
-- **The seed.** Rings's handshake carries no version, and a seed tells its version only to its operator.
-  A seed of another Rings version fails to read the node's offer ("Answer offer info failed: Codec
-  deserialization error"), or the node fails to read its answer ("Decode error"). LispM Remote takes
-  those words for a version mismatch and says, for example, "node.rings.rs runs another Rings version
-  than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0." It
-  names its own Rings from the node's `nodeInfo`. Which side is older it cannot say until Rings's
-  handshake carries the version. It then leaves that seed alone for half an hour
+- **The seed.** This Rings's handshake carries no version, and a seed tells its version only to its
+  operator. A seed of another Rings version fails to read the node's offer ("Answer offer info failed:
+  Codec deserialization error"), or the node fails to read its answer ("Decode error"). LispM Remote
+  takes those words for a version mismatch and says, for example, "node.rings.rs runs another Rings
+  version than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0."
+  It names its own Rings from the node's `nodeInfo`.
+- **A seed with a wire version.** A seed whose handshake carries a wire version
+  ([RingsNetwork/rings#1106](https://github.com/RingsNetwork/rings/pull/1106)) refuses this node by
+  name: "Incompatible wire version: ours is 1, the peer's is from before wire versioning". Its JSON-RPC
+  code and data do not reach LispM Remote through this Rings, only these words, but they say which side
+  is older, so LispM Remote says "node.rings.rs runs a newer Rings than this LispM Remote (0.36.0).
+  Update LispM Remote." Either way it then leaves that seed alone for half an hour
   (`lispm-remote-mismatch-seconds`), so a seed that refuses addresses that keep asking (429) does not
   refuse this one. Turning LispM Remote off and on in Emacs, or reloading the page, tries at once.
 - **LispM and the page.** Every frame starts with the version of LispM Remote's protocol it is in, and
