@@ -4,7 +4,7 @@
 
 ;; Author: Ryan.K
 ;; Version: 0.2.0
-;; Package-Requires: ((emacs "30.1"))
+;; Package-Requires: ((emacs "30.1") (lispm-prebuilt "0.1.0"))
 ;; Keywords: comm
 ;; URL: https://github.com/LispMachineLab/lispm-remote
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -1387,6 +1387,11 @@ windows from their page."
               ((yes-or-no-p (format "Forget %s? " (aref (tabulated-list-get-entry) 0)))))
     (lispm-remote-forget peer)
     (revert-buffer)))
+
+;; The module comes in the background, so that turning LispM Remote on
+;; need not wait for it.
+(unless noninteractive
+  (run-with-idle-timer 1 nil #'lispm-remote-module-prefetch))
 
 (provide 'lispm-remote)
 ;;; lispm-remote.el ends here

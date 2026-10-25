@@ -5,3 +5,4 @@
 /web/pkg
 /test/e2e/node_modules
 /prebuilt
+/.deps/

@@ -170,7 +170,12 @@ The node's identity is a Rings account key. It is made the first time and kept i
 You never have to build the module. LispM Remote downloads the one published for your computer
 (macOS on Apple silicon or Intel, GNU/Linux on x86_64 or arm64), and keeps it only if its SHA-256
 matches the one pinned in `lisp/lispm-remote-module-sums.eld`. That file comes from the repository's
-signed history, not from the release, so a module changed after it was pinned is refused.
+signed history, not from the release, so a module changed after it was pinned is refused. It is
+downloaded in the background once LispM Remote opens, so turning it on need not wait.
+[lispm-prebuilt](https://github.com/LispMachineLab/lispm-prebuilt) does the downloading, in
+[lispm-kernel](https://github.com/LispMachineLab/lispm-kernel) when it runs; LispM's App Store
+installs it with LispM Remote, and the Makefile finds a checkout of it beside this one
+(`LISPM_PREBUILT=../lispm-prebuilt`).
 
 To build the module yourself instead, set `(setq lispm-remote-module-source 'build)` or run
 `make module`.
