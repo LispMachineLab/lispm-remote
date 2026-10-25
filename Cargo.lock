@@ -3669,8 +3669,8 @@ dependencies = [
 
 [[package]]
 name = "rings-aez"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "aes",
  "subtle",
@@ -3680,8 +3680,8 @@ dependencies = [
 
 [[package]]
 name = "rings-codec"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "postcard",
  "serde",
@@ -3689,8 +3689,8 @@ dependencies = [
 
 [[package]]
 name = "rings-core"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -3747,8 +3747,8 @@ dependencies = [
 
 [[package]]
 name = "rings-derive"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3757,8 +3757,8 @@ dependencies = [
 
 [[package]]
 name = "rings-dns-relay"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "async-trait",
  "hickory-proto",
@@ -3779,8 +3779,8 @@ dependencies = [
 
 [[package]]
 name = "rings-gateway"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "async-trait",
  "ipnet",
@@ -3798,8 +3798,8 @@ dependencies = [
 
 [[package]]
 name = "rings-measure"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -3807,8 +3807,8 @@ dependencies = [
 
 [[package]]
 name = "rings-network-policy"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "thiserror 1.0.69",
  "url",
@@ -3816,8 +3816,8 @@ dependencies = [
 
 [[package]]
 name = "rings-node"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "anyhow",
  "arrayref",
@@ -3877,8 +3877,8 @@ dependencies = [
 
 [[package]]
 name = "rings-rpc"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "async-trait",
  "base64 0.13.1",
@@ -3898,8 +3898,8 @@ dependencies = [
 
 [[package]]
 name = "rings-runtime"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "futures",
  "futures-timer",
@@ -3909,8 +3909,8 @@ dependencies = [
 
 [[package]]
 name = "rings-transport"
-version = "0.36.0"
-source = "git+https://github.com/RingsNetwork/rings?rev=41a09273cd3fc683c7cf6f7d272834c6d2fffc15#41a09273cd3fc683c7cf6f7d272834c6d2fffc15"
+version = "0.37.0"
+source = "git+https://github.com/RingsNetwork/rings?rev=470730ff8c6c250c7e709f7da18e47e16cc1fcb9#470730ff8c6c250c7e709f7da18e47e16cc1fcb9"
 dependencies = [
  "async-trait",
  "bytes",

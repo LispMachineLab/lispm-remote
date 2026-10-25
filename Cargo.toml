@@ -19,9 +19,9 @@ chacha20 = { version = "0.9", default-features = false, features = ["zeroize"] }
 proptest = "1"
 sha2 = { version = "0.10", default-features = false }
 # Rings Network, at a release tag; its crates come from one repository.
-rings-core = { git = "https://github.com/RingsNetwork/rings", rev = "41a09273cd3fc683c7cf6f7d272834c6d2fffc15", default-features = false, features = ["default"] }
-rings-node = { git = "https://github.com/RingsNetwork/rings", rev = "41a09273cd3fc683c7cf6f7d272834c6d2fffc15", default-features = false, features = ["node"] }
-rings-rpc = { git = "https://github.com/RingsNetwork/rings", rev = "41a09273cd3fc683c7cf6f7d272834c6d2fffc15" }
+rings-core = { git = "https://github.com/RingsNetwork/rings", rev = "470730ff8c6c250c7e709f7da18e47e16cc1fcb9", default-features = false, features = ["default"] }
+rings-node = { git = "https://github.com/RingsNetwork/rings", rev = "470730ff8c6c250c7e709f7da18e47e16cc1fcb9", default-features = false, features = ["node"] }
+rings-rpc = { git = "https://github.com/RingsNetwork/rings", rev = "470730ff8c6c250c7e709f7da18e47e16cc1fcb9" }
 # Without "std" and "use-getrandom": randomness reaches snow only through
 # the seeded resolver, so a handshake is a function of its inputs.
 snow = { version = "0.10", default-features = false, features = [
