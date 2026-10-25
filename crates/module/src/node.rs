@@ -39,6 +39,7 @@ use rings_core::delegation::DelegateeKey;
 use rings_core::delegation::DelegationBuilder;
 use rings_core::dht::Did;
 use rings_core::ecc::SecretKey;
+use rings_core::lifecycle::StopSource;
 use rings_core::message::ReplayStorage;
 use rings_core::storage::MemStorage;
 use rings_node::native::config::DEFAULT_NETWORK_ID;
@@ -251,6 +252,8 @@ pub struct Node {
     /// `None` only while the node is being dropped.
     runtime: Option<Runtime>,
     provider: Arc<Provider>,
+    /// Stops the listener, before the node closes its network.
+    listening: StopSource,
     inbox: Arc<Inbox>,
     did: String,
     next: AtomicU64,
@@ -305,14 +308,17 @@ impl Node {
                 Ok::<_, rings_node::error::Error>(provider)
             })
             .map_err(|error| NodeError::Rings(error.to_string()))?;
-        let listening = Arc::clone(&provider);
-        // The listener ends only when the swarm does.
+        let listener = Arc::clone(&provider);
+        let listening = StopSource::new();
+        let stop = listening.token();
+        // The listener ends when the node stops it.
         runtime.spawn(async move {
-            let _ = listening.listen().await;
+            let _ = listener.listen_with(stop).await;
         });
         Ok(Self {
             runtime: Some(runtime),
             provider,
+            listening,
             inbox,
             did: account.did(),
             next: AtomicU64::new(1),
@@ -402,9 +408,21 @@ impl Node {
 }
 
 impl Drop for Node {
+    /// Stops the listener, closes every connection so that no socket stays
+    /// bound (RingsNetwork/rings#1098), then ends the runtime.  Its peers
+    /// see the connections close at once.
+    ///
+    /// ```text
+    ///   drop = close(inbox) ; stop(listener) ; close(provider) ≤ SHUTDOWN ; shutdown(runtime) ≤ SHUTDOWN
+    /// ```
     fn drop(&mut self) {
         self.inbox.close();
+        self.listening.request_stop();
         if let Some(runtime) = self.runtime.take() {
+            let provider = Arc::clone(&self.provider);
+            // A close that fails or hangs still ends in the shutdown below.
+            let _ = runtime
+                .block_on(async move { tokio::time::timeout(SHUTDOWN, provider.close()).await });
             runtime.shutdown_timeout(SHUTDOWN);
         }
     }

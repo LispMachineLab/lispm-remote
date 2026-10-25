@@ -15,7 +15,8 @@
 //!   PairInit from p    Waiting(o) ∧ p proves psk(o)   → Claimed(o, p), ask the owner
 //!                      Claimed(o, p) ∧ p again         → Claimed(o, p'), ask again
 //!                      Claimed(o, q) ∧ p ≠ q proves it → None, refuse both    [Contested]
-//!   Approve(f)         Claimed(o, c) ∧ f = fp(c)      → None, devices[c.peer] ← c, channel open
+//!   Approve(f)         Claimed(o, c) ∧ f = fp(c)      → None, devices[c.peer] ← c, channel open;
+//!                                                       a record keyed c.key elsewhere is forgotten
 //!   Refuse | Withdraw  → None, the claimant refused
 //!   Tick               expired offer → None
 //!   OpenInit from p    p ∈ devices ∧ KK verifies      → channel open (oldest evicted past the cap)
@@ -450,7 +451,7 @@ impl Responder {
                     Some(CommandError::StaleApproval)
                 } else if offer.expired_at(now) {
                     Some(CommandError::Expired)
-                } else if !self.has_room_for(&claim.from) {
+                } else if !self.has_room_for(&claim.from, &claim.key) {
                     Some(CommandError::TooManyDevices)
                 } else {
                     None
@@ -460,9 +461,26 @@ impl Responder {
         }
     }
 
-    /// Whether a device at `peer` may be stored.
-    fn has_room_for(&self, peer: &PeerId) -> bool {
-        self.devices.contains_key(peer) || self.devices.len() < MAX_DEVICES
+    /// Whether a device at `peer` keyed `key` may be stored: it replaces a
+    /// record at that address or with that key, or there is room.
+    fn has_room_for(&self, peer: &PeerId, key: &PublicKey) -> bool {
+        self.devices.contains_key(peer)
+            || self
+                .devices
+                .values()
+                .any(|paired| paired.record.key == *key)
+            || self.devices.len() < MAX_DEVICES
+    }
+
+    /// The addresses other than `peer` whose records hold `key`: the same
+    /// device, paired before its Rings address changed.  Rings 0.37 gave
+    /// every browser account a new address (RingsNetwork/rings#1072).
+    fn moved_from(&self, peer: &PeerId, key: &PublicKey) -> Vec<PeerId> {
+        self.devices
+            .iter()
+            .filter(|(at, paired)| *at != peer && paired.record.key == *key)
+            .map(|(at, _)| at.clone())
+            .collect()
     }
 
     fn approve(
@@ -510,6 +528,12 @@ impl Responder {
         ];
         if let Some(old) = self.devices.remove(&peer) {
             effects.extend(farewells(&peer, old.channels, CloseReason::Repaired));
+        }
+        for at in self.moved_from(&peer, &record.key) {
+            if let Some(old) = self.devices.remove(&at) {
+                effects.extend(farewells(&at, old.channels, CloseReason::Repaired));
+                effects.push(Effect::Forgotten(at));
+            }
         }
         let mut paired = Paired {
             record,

@@ -226,6 +226,10 @@ before the first check.")
 (defvar lispm-remote--view 'home
   "What LispM Remote's window shows: `home' or `pair'.")
 
+(defconst lispm-remote--rings "0.37"
+  "The Rings at whose addresses devices pair now.
+A device record notes it as :rings; see `lispm-remote--device-current-p'.")
+
 (defconst lispm-remote--log-buffer " *lispm-remote log*"
   "The buffer LispM Remote notes what it discarded and what failed in.")
 
@@ -268,7 +272,8 @@ nil when there is none."
         secret)))
 
 (defun lispm-remote--devices ()
-  "Return the paired devices: plists of :peer, :key, :name and :paired-at."
+  "Return the paired devices: plists of :peer, :key, :name, :paired-at and
+:rings, the Rings they paired under (absent before Rings 0.37)."
   (when-let* ((text (lispm-remote--read "devices.eld")))
     (car (read-from-string text))))
 
@@ -396,7 +401,8 @@ changed; with REJOIN, join the network again when there are none."
        (lispm-remote--render))
       (`(paired ,peer ,key ,name ,paired-at)
        (lispm-remote--save-devices
-        (cons (list :peer peer :key key :name name :paired-at paired-at)
+        (cons (list :peer peer :key key :name name :paired-at paired-at
+                    :rings lispm-remote--rings)
               (seq-remove (lambda (device) (equal (plist-get device :peer) peer))
                           (lispm-remote--devices))))
        (setq lispm-remote--offer (plist-put (plist-put lispm-remote--offer :paired name)
@@ -1298,6 +1304,18 @@ windows from their page."
   (seq-count (lambda (session) (equal (lispm-remote--session-peer session) peer))
              lispm-remote--sessions))
 
+(defconst lispm-remote--moved-device-text
+  "Paired before Rings 0.37, which gave it a new address. Pair it again with M-x lispm-remote-pair; the new pairing replaces this one."
+  "What a device paired before `lispm-remote--rings' shows.")
+
+(defun lispm-remote--device-current-p (device)
+  "Return non-nil when DEVICE paired at its present Rings address.
+Rings 0.37 gave every browser a new address (RingsNetwork/rings#1072),
+and LispM binds the address a device paired at into each session, so a
+device paired before cannot open one until it pairs again.  Its device
+key stays, so the new pairing replaces the old record."
+  (equal (plist-get device :rings) lispm-remote--rings))
+
 (defun lispm-remote--insert-device (device)
   "Insert a line for the paired DEVICE, with a button forgetting it."
   (let* ((peer (plist-get device :peer))
@@ -1315,7 +1333,11 @@ windows from their page."
                         'action (lambda (_)
                                   (when (yes-or-no-p (format "Forget %s? " (plist-get device :name)))
                                     (lispm-remote-forget peer))))
-    (insert "\n")))
+    (insert "\n")
+    (unless (lispm-remote--device-current-p device)
+      (insert "    "
+              (propertize lispm-remote--moved-device-text 'face 'lispm-remote-failed)
+              "\n"))))
 
 (defun lispm-remote--insert-home ()
   "Insert LispM Remote's home."

@@ -710,6 +710,34 @@ tester, bound as BINDINGS says: (PHONE)."
       (kill-buffer lispm-remote--buffer)
       (delete-directory lispm-remote-directory t))))
 
+(ert-deftest lispm-remote-test-a-device-paired-before-rings-0.37-is-told-to-pair-again ()
+  (let ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
+        (lispm-remote--view 'home)
+        (old '(:peer "0x1f0f8a4b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f" :key "k" :name "Old Phone"
+                     :paired-at 1792700000000)))
+    (unwind-protect
+        (progn
+          (lispm-remote--save-devices (list old))
+          (with-current-buffer (lispm-remote--render)
+            (should (string-search "Old Phone" (buffer-string)))
+            (should (string-search lispm-remote--moved-device-text (buffer-string))))
+          ;; The phone pairs again at its new address with the same key: the
+          ;; machine stores the new record and forgets the old one.
+          (lispm-remote--apply
+           `((paired "0x3bbba89641b3470b86f516a9e91862ce6b23765b" "k" "Old Phone" 1792800000000)
+             (forgotten ,(plist-get old :peer))))
+          (let ((devices (lispm-remote--devices)))
+            (should (= (length devices) 1))
+            (should (equal (plist-get (car devices) :rings) lispm-remote--rings)))
+          (setq lispm-remote--view 'home)
+          (with-current-buffer (lispm-remote--render)
+            (should (string-search "Old Phone" (buffer-string)))
+            (should-not (string-search lispm-remote--moved-device-text (buffer-string)))))
+      (when (buffer-live-p (get-buffer lispm-remote--buffer))
+        (kill-buffer lispm-remote--buffer))
+      (setq lispm-remote--offer nil)
+      (delete-directory lispm-remote-directory t))))
+
 (ert-deftest lispm-remote-test-home-follows-pairing-and-sessions ()
   (skip-unless (lispm-remote-node-test--module-p))
   (lispm-remote-test--with-world (_relay phone)
