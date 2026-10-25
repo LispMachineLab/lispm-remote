@@ -9,19 +9,23 @@
 #   make test-page    the page's tests, on what `make page` built
 #   make serve        serve web/dist at http://localhost:8000
 #   make e2e          the browser test of the page, on Linux, with sudo
+#   make pin          pin the published modules of these sources
+#   make check-pins   check the pins against the release
 
 EMACS ?= emacs
+# lispm-prebuilt, which downloads the module: a checkout beside this one.
+LISPM_PREBUILT ?= ../lispm-prebuilt
 CARGO ?= cargo
 NPM ?= npm
 WASM_PACK ?= wasm-pack
 PYTHON ?= python3
 PORT ?= 8000
 TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
-EMACS_BATCH = $(EMACS) -Q --batch -L lisp
+EMACS_BATCH = $(EMACS) -Q --batch -L lisp -L $(LISPM_PREBUILT)
 PAGE = web/dist
 RINGS = web/node_modules/@ringsnetwork/rings-node/dist
 
-.PHONY: all module display-page test test-rust test-lisp test-page compile page serve e2e clean
+.PHONY: all module display-page test test-rust test-lisp test-page compile page serve e2e clean pin check-pins
 
 all: module
 
@@ -79,7 +83,13 @@ test/e2e/node_modules/.package-lock.json: test/e2e/package.json test/e2e/package
 	cd test/e2e && $(NPM) ci --no-audit --no-fund && npx playwright install chromium
 
 e2e: module page test/e2e/node_modules/.package-lock.json
-	sudo test/e2e/run.sh
+	sudo LISPM_PREBUILT=$(abspath $(LISPM_PREBUILT)) test/e2e/run.sh
+
+pin:
+	$(EMACS_BATCH) -l lispm-remote-module -f lispm-remote-module-batch-pin
+
+check-pins:
+	LISPM_REMOTE_PIN_CHECK=1 $(EMACS_BATCH) -l lispm-remote-module -f lispm-remote-module-batch-pin
 
 clean:
 	$(CARGO) clean

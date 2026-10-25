@@ -20,10 +20,13 @@
 //!   (delivered PEER CHANNEL BYTES) a channel delivered a payload
 //!   (closed PEER CHANNEL REASON)   a channel closed
 //!   (discarded FROM WHY)           a frame was discarded
+//!   (other-version FROM V OURS)    FROM speaks the protocol's version V, not OURS
 //! ```
 //!
 //! A device's effects are the same without PEER, plus `(show-fingerprint
-//! FINGERPRINT)`, `(unpaired)` and `(failed REASON [DETAIL])`.  Keys and
+//! FINGERPRINT)`, `(unpaired)` and `(failed REASON [DETAIL])`; the failure
+//! `(failed other-version V OURS)` says that LispM speaks the protocol's
+//! version V, which the device, speaking OURS, does not.  Keys and
 //! channels travel as hexadecimal text, fingerprints as `4F2A-91C0`,
 //! frames and payloads as unibyte strings, moments as milliseconds since
 //! the epoch.  A command the machine refuses signals an error and leaves
@@ -57,6 +60,7 @@ use lispm_remote_protocol::PeerId;
 use lispm_remote_protocol::PublicKey;
 use lispm_remote_protocol::Responder;
 use lispm_remote_protocol::StaticSecret;
+use lispm_remote_protocol::VERSION;
 use lispm_remote_protocol::device;
 use lispm_remote_protocol::lispm;
 
@@ -187,6 +191,12 @@ fn lispm_effect(env: &Env, effect: lispm::Effect) -> Result<Value<'_>> {
         lispm::Effect::Discarded { from, why } => {
             env.list((tag("discarded")?, text(&from), format!("{why:?}")))
         }
+        lispm::Effect::OtherVersion { from, version } => env.list((
+            tag("other-version")?,
+            text(&from),
+            i64::from(version),
+            i64::from(VERSION),
+        )),
     }
 }
 
@@ -211,6 +221,12 @@ fn device_effect(env: &Env, effect: device::Effect) -> Result<Value<'_>> {
         device::Effect::Failed(device::Failure::Refused(refusal)) => {
             env.list((tag("failed")?, tag("refused")?, variant(env, refusal)?))
         }
+        device::Effect::Failed(device::Failure::OtherVersion(version)) => env.list((
+            tag("failed")?,
+            tag("other-version")?,
+            i64::from(version),
+            i64::from(VERSION),
+        )),
         device::Effect::Failed(failure) => env.list((tag("failed")?, variant(env, failure)?)),
         device::Effect::Discarded(why) => env.list((tag("discarded")?, format!("{why:?}"))),
     }

@@ -44,6 +44,10 @@ its input. That is what lets the tests cover every order of a pairing's events.
 
 ## Pairing a device
 
+`M-x lispm-remote` opens LispM Remote's window. It shows whether devices can reach LispM, with
+a button that turns it on or off (`t`), and the paired devices, each marked connected or not, with a
+Forget button. From there, `p` pairs another device.
+
 `M-x lispm-remote-pair` turns on `lispm-remote-mode` and shows the pairing screen. It walks through
 the same steps as the device's page, **Join, Scan, Reach, Confirm, Connected**, so you can follow
 one pairing on either screen.
@@ -74,6 +78,25 @@ What happens when the network drops:
   `~/.emacs.d/lispm-remote/rings/`, and the page keeps them in IndexedDB.
 - **Coming back.** A node that comes back while its old connection still looks alive is refused until
   that connection times out, about five seconds. The device keeps offering until then.
+
+When the other end runs another version, LispM Remote says so after the first failure, in Emacs's
+window and in the page's steps, and stops trying:
+
+- **The seed.** Rings's handshake carries no version, and a seed tells its version only to its operator.
+  A seed of another Rings version fails to read the node's offer ("Answer offer info failed: Codec
+  deserialization error"), or the node fails to read its answer ("Decode error"). LispM Remote takes
+  those words for a version mismatch and says, for example, "node.rings.rs runs another Rings version
+  than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0." It
+  names its own Rings from the node's `nodeInfo`. Which side is older it cannot say until Rings's
+  handshake carries the version. It then leaves that seed alone for half an hour
+  (`lispm-remote-mismatch-seconds`), so a seed that refuses addresses that keep asking (429) does not
+  refuse this one. Turning LispM Remote off and on in Emacs, or reloading the page, tries at once.
+- **LispM and the page.** Every frame starts with the version of LispM Remote's protocol it is in, and
+  every version keeps the frame's header (version, kind, channel). An end that gets a frame of another
+  version answers on its channel in its own version, so the other end learns which it speaks. Emacs
+  names the device and says which side is older ("Update LispM Remote", or "Reload the page on it");
+  the page fails its Reach step the same way and opens no session until it reloads or scans a new code.
+  A change an older end cannot follow takes the next protocol version.
 
 ## Talking to agents from another device
 
@@ -163,9 +186,23 @@ through callbacks, so it never waits on the network. Frames from other peers arr
 The node's identity is a Rings account key. It is made the first time and kept in
 `~/.emacs.d/lispm-remote/account`, which only you can read.
 
-LispM's modules are meant to be downloaded and checked against pinned checksums. No module is
-published yet, so for now you have to choose to build it: `(setq lispm-remote-module-source 'build)`,
-or `make module`.
+You never have to build the module. LispM Remote downloads the one published for your computer
+(macOS on Apple silicon or Intel, GNU/Linux on x86_64 or arm64), and keeps it only if its SHA-256
+matches the one pinned in `lisp/lispm-remote-module-sums.eld`. That file comes from the repository's
+signed history, not from the release, so a module changed after it was pinned is refused. It is
+downloaded in the background once LispM Remote opens, so turning it on need not wait.
+[lispm-prebuilt](https://github.com/LispMachineLab/lispm-prebuilt) does the downloading, in
+[lispm-kernel](https://github.com/LispMachineLab/lispm-kernel) when it runs; LispM's App Store
+installs it with LispM Remote, and the Makefile finds a checkout of it beside this one
+(`LISPM_PREBUILT=../lispm-prebuilt`).
+
+To build the module yourself instead, set `(setq lispm-remote-module-source 'build)` or run
+`make module`.
+
+**Publishing a module.** The Module release workflow builds the module for each computer from
+`main` and publishes it as `module-VERSION`, where VERSION is a digest of the module's sources. Each
+version is built and published once. After that, `make pin` writes the checksums into the sums file
+for the release that ships it, and `make check-pins` checks that file against the published release.
 
 ## LispM's windows on another device
 

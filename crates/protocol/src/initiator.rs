@@ -19,6 +19,7 @@
 //!   Record            Open                   → delivered, or Idle when closed
 //!   Tick              past `until`           → Idle, timed out
 //!                     past `retry_at`        → send the waiting frame again
+//!   frame of version v ≠ VERSION             → Idle, failed: the responder speaks v
 //! ```
 //!
 //! The network may lose a frame between hops and say nothing, so a phase
@@ -172,6 +173,9 @@ pub enum Failure {
     Handshake(HandshakeError),
     /// This device stopped waiting.
     Abandoned,
+    /// The responder speaks this version of the protocol, which this
+    /// device does not.
+    OtherVersion(u8),
 }
 
 /// Why a frame was discarded.
@@ -437,6 +441,7 @@ impl Initiator {
         }
         let frame = match Frame::decode(bytes) {
             Ok(frame) => frame,
+            Err(WireError::Version(version)) => return self.other_version(version),
             Err(error) => return vec![Effect::Discarded(Discard::Malformed(error))],
         };
         match (core::mem::replace(&mut self.phase, Phase::Idle), frame) {
@@ -522,6 +527,18 @@ impl Initiator {
             }
             Err(error) => vec![Effect::Failed(Failure::Handshake(error))],
         }
+    }
+
+    /// The responder's frame came in the protocol's version `version`,
+    /// which this device does not speak: what the phase waited for or had
+    /// ends, and its frame is not sent again.
+    fn other_version(&mut self, version: u8) -> Vec<Effect> {
+        let mut effects = Vec::with_capacity(2);
+        if let Phase::Open { .. } = core::mem::replace(&mut self.phase, Phase::Idle) {
+            effects.push(Effect::Closed(CloseReason::ByPeer));
+        }
+        effects.push(Effect::Failed(Failure::OtherVersion(version)));
+        effects
     }
 
     fn refused(&mut self, reason: Refusal) -> Vec<Effect> {

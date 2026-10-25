@@ -6,6 +6,7 @@
 //! A node the test can wait on, and a way to connect two nodes without a
 //! seed: the offer and answer passed by hand.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
@@ -47,8 +48,13 @@ pub struct Peer {
 
 impl Peer {
     pub fn start() -> Self {
+        Self::start_as(&Account::generate(), None)
+    }
+
+    /// A node for `account`, its replay records kept in `store`.
+    pub fn start_as(account: &Account, store: Option<&Path>) -> Self {
         let bell = Shared::default();
-        let node = Node::start(&Account::generate(), ICE, None, bell.clone()).unwrap();
+        let node = Node::start(account, ICE, store, bell.clone()).unwrap();
         Self {
             node,
             bell,
@@ -83,16 +89,26 @@ impl Peer {
 
     /// The result of the request `method` with `params`.
     pub fn ask(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        match self.request(method, params) {
+            Ok(result) => result,
+            Err(error) => panic!("{method} failed: {error}"),
+        }
+    }
+
+    /// The result of the request `method` with `params`, or why it failed,
+    /// as Rings put it.
+    pub fn request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let id = self.node.request(method, &params.to_string()).unwrap();
         let reply = self.next(|event| match event {
             Event::Reply { id: got, result } if *got == id => Some(Ok(result.clone())),
             Event::Failed { id: got, error } if *got == id => Some(Err(error.clone())),
             _ => None,
         });
-        match reply {
-            Ok(result) => serde_json::from_str(&result).unwrap(),
-            Err(error) => panic!("{method} failed: {error}"),
-        }
+        reply.map(|result| serde_json::from_str(&result).unwrap())
     }
 
     pub fn connected_to(&mut self, other: &str) -> bool {

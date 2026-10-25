@@ -39,8 +39,8 @@
 (defun lispm-remote-display-test--module-p ()
   "Return non-nil when the built module can be loaded."
   (let ((lispm-remote-module-source 'build))
-    (and (ignore-errors (lispm-remote-module--built-file))
-         (file-readable-p (lispm-remote-module--built-file))
+    (and (ignore-errors (lispm-prebuilt-built-file 'lispm-remote-module))
+         (file-readable-p (lispm-prebuilt-built-file 'lispm-remote-module))
          (progn (lispm-remote-module-load) t))))
 
 (defun lispm-remote-display-test--wait (predicate)

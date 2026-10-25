@@ -68,12 +68,13 @@
 (declare-function lispm-remote-core-initiator-send "lispm-remote-core")
 (declare-function lispm-remote-core-initiator-tick "lispm-remote-core")
 (declare-function lispm-remote-core-initiator-open-p "lispm-remote-core")
+(declare-function lispm-remote-core-initiator-close "lispm-remote-core")
 
 (cl-defstruct (lispm-remote-test-phone (:constructor lispm-remote-test--phone-create)
                                        (:copier nil))
   "A phone: a Rings node and the device's machine, with what it saw."
   account secret store node machine timer pairing fingerprint states failures
-  unpaired send-errors asking asked-at displays)
+  unpaired send-errors asking asked-at displays reopen)
 
 (defun lispm-remote-test--phone-start (phone)
   "Start PHONE's node with its account, and its machine from its stored
@@ -105,6 +106,9 @@ again while none came since the channel opened, as the page does."
   (when (lispm-remote-node-live-p (lispm-remote-test-phone-node phone))
     (let ((machine (lispm-remote-test-phone-machine phone)))
       (lispm-remote-test--phone-apply phone (lispm-remote-core-initiator-tick machine))
+      (when (lispm-remote-test-phone-reopen phone)
+        (setf (lispm-remote-test-phone-reopen phone) nil)
+        (lispm-remote-test--phone-apply phone (lispm-remote-core-initiator-connect machine)))
       (when (and (lispm-remote-test-phone-asking phone)
                  (lispm-remote-core-initiator-open-p machine)
                  (< (or (lispm-remote-test-phone-asked-at phone) 0) (- (float-time) 2)))
@@ -141,7 +145,13 @@ again while none came since the channel opened, as the page does."
                                   :object-type 'alist :array-type 'list)
                (lispm-remote-test-phone-states phone))))
       (`(failed . ,why)
-       (push why (lispm-remote-test-phone-failures phone))))))
+       (push why (lispm-remote-test-phone-failures phone))
+       ;; A session that could not open in time is tried again while the
+       ;; phone is paired, as the page does: the network may have lost
+       ;; every request of that try.
+       (when (and (equal why '(timed-out))
+                  (lispm-remote-test-phone-pairing phone))
+         (setf (lispm-remote-test-phone-reopen phone) t))))))
 
 (defun lispm-remote-test--last-state (phone)
   "Return the last state PHONE received."
@@ -554,7 +564,8 @@ tester, bound as BINDINGS says: (PHONE)."
   (skip-unless (lispm-remote-node-test--module-p))
   (lispm-remote-test--with-world (relay phone)
     (lispm-remote-approve (lispm-remote-test--claim phone))
-    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-pairing phone)))
+    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-pairing phone))
+                                  "pairing on the phone")
     (lispm-remote-forget (lispm-remote-node-did (lispm-remote-test-phone-node phone)))
     (should-not (lispm-remote--devices))
     ;; The phone comes back and is told it is no longer paired.
@@ -564,7 +575,14 @@ tester, bound as BINDINGS says: (PHONE)."
     (lispm-remote-node-test--connect (lispm-remote-test-phone-node phone) relay)
     (lispm-remote-test--phone-apply
      phone (lispm-remote-core-initiator-connect (lispm-remote-test-phone-machine phone)))
-    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-unpaired phone)))
+    (ert-info ((lambda ()
+                 (format "phone failures: %S\nphone send errors: %S\nLispM log:\n%s"
+                         (lispm-remote-test-phone-failures phone)
+                         (lispm-remote-test-phone-send-errors phone)
+                         (with-current-buffer (get-buffer-create lispm-remote--log-buffer)
+                           (buffer-string)))))
+      (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-unpaired phone))
+                                    "refusal of the forgotten phone"))
     (should-not (lispm-remote-test-phone-pairing phone))))
 
 (ert-deftest lispm-remote-test-keys-are-kept-private ()
@@ -642,6 +660,7 @@ tester, bound as BINDINGS says: (PHONE)."
 (ert-deftest lispm-remote-test-the-screen-reads-the-same-in-a-terminal ()
   (skip-unless (lispm-remote-node-test--module-p))
   (let ((lispm-remote--offer (list :token "AQID" :expires (+ (float-time) 90)))
+        (lispm-remote--view 'pair)
         (lispm-remote--peers 1)
         (lispm-remote-offer-seconds 120))
     (unwind-protect
@@ -662,7 +681,8 @@ tester, bound as BINDINGS says: (PHONE)."
 
 (ert-deftest lispm-remote-test-the-screen-stops-ticking-once-paired ()
   (let ((lispm-remote--offer (list :token "AQID" :expires (+ (float-time) 90)
-                                   :fingerprint "4F2A-91C0" :name "Phone")))
+                                   :fingerprint "4F2A-91C0" :name "Phone"))
+        (lispm-remote--view 'pair))
     (unwind-protect
         (with-current-buffer (lispm-remote--render)
           (should (string-search "4F2A-91C0" (buffer-string)))
@@ -673,6 +693,50 @@ tester, bound as BINDINGS says: (PHONE)."
           (should-not lispm-remote--ticker)
           (should (string-search "Paired with Phone" (buffer-string))))
       (kill-buffer lispm-remote--buffer))))
+
+;;;; Home
+
+(ert-deftest lispm-remote-test-home-says-it-is-off-and-lists-no-device ()
+  (let ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
+        (lispm-remote--view 'home))
+    (unwind-protect
+        (with-current-buffer (lispm-remote--render)
+          (should (derived-mode-p 'lispm-remote-home-mode))
+          (should (string-search "○ Off: no device can reach LispM" (buffer-string)))
+          (should (string-search "Turn on (t)" (buffer-string)))
+          (should (string-search "None yet." (buffer-string)))
+          (should (string-search "Pair a device (p)" (buffer-string)))
+          (should-not lispm-remote--ticker))
+      (kill-buffer lispm-remote--buffer)
+      (delete-directory lispm-remote-directory t))))
+
+(ert-deftest lispm-remote-test-home-follows-pairing-and-sessions ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (lispm-remote-test--with-world (_relay phone)
+    (lispm-remote)
+    (with-current-buffer lispm-remote--buffer
+      (should (derived-mode-p 'lispm-remote-home-mode))
+      (should (string-search "Turn off (t)" (buffer-string)))
+      (should (string-search (lispm-remote-node-did lispm-remote--node) (buffer-string))))
+    ;; Pairing takes the window over, and q brings home back.
+    (let ((fingerprint (lispm-remote-test--claim phone)))
+      (with-current-buffer lispm-remote--buffer
+        (should (derived-mode-p 'lispm-remote-pair-mode)))
+      (lispm-remote-approve fingerprint))
+    (lispm-remote-node-test--wait (lambda () (lispm-remote-test-phone-states phone))
+                                  "state after pairing")
+    (lispm-remote-withdraw)
+    (with-current-buffer lispm-remote--buffer
+      (should (derived-mode-p 'lispm-remote-home-mode))
+      (should (string-search "Test Phone" (buffer-string)))
+      (should (string-search "● connected" (buffer-string))))
+    ;; The phone goes; home says so once its session closes.
+    (lispm-remote-test--phone-apply
+     phone (lispm-remote-core-initiator-close (lispm-remote-test-phone-machine phone)))
+    (lispm-remote-node-test--wait
+     (lambda () (with-current-buffer lispm-remote--buffer
+                  (string-search "○ not connected" (buffer-string))))
+     "home to see the phone go")))
 
 (ert-deftest lispm-remote-test-a-phone-sees-approvals-and-answers-them ()
   (skip-unless (lispm-remote-node-test--module-p))
@@ -909,5 +973,182 @@ made a tty frame for it, and only after the phone asked."
       (lispm-remote-display-stop)
       (when (get-buffer "notes")
         (kill-buffer "notes")))))
+
+;;;; Versions
+
+(defconst lispm-remote-test--mismatch
+  "Internal rpc services error: Server error: Connect remote rpc server failed: Server returned rpc error Server error: Answer offer info failed: Codec deserialization error..."
+  "Why LispM Remote 0.1.0, on Rings 0.34.2, could not join through
+node.rings.rs once it ran Rings 0.36.0, word for word.  The module's
+test `a_seed_of_another_rings_version_cannot_read_the_offer' holds Rings
+to the words that tell it.")
+
+(defconst lispm-remote-test--phone-did "0x2222222222222222222222222222222222222222"
+  "The DID of a device in the tests of versions.")
+
+(defmacro lispm-remote-test--with-home (&rest body)
+  "Run BODY with LispM Remote's home on show, as if `lispm-remote-mode'
+were on, off the network: no node, no seed joined."
+  (declare (indent 0))
+  `(let ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
+         (lispm-remote-mode t)
+         (lispm-remote--node (lispm-remote-node--create :did "0xemacs"))
+         (lispm-remote--view 'home)
+         (lispm-remote--peers 0)
+         (lispm-remote--rings "0.36.0")
+         (lispm-remote--mismatches nil)
+         (lispm-remote--peer-versions nil)
+         (inhibit-message t))
+     (unwind-protect
+         (progn ,@body)
+       (when (get-buffer lispm-remote--buffer)
+         (kill-buffer lispm-remote--buffer))
+       (delete-directory lispm-remote-directory t))))
+
+(defun lispm-remote-test--home-text ()
+  "Return what LispM Remote's home says now."
+  (with-current-buffer (lispm-remote--render)
+    (buffer-string)))
+
+(ert-deftest lispm-remote-test-a-seed-of-another-rings-is-told-by-its-words ()
+  (should (lispm-remote-rings-mismatch-p lispm-remote-test--mismatch))
+  ;; This node reading a seed's answer it cannot decode.
+  (should (lispm-remote-rings-mismatch-p "Internal rpc services error: Server error: Decode error.."))
+  (dolist (other '("Internal rpc services error: Server error: a handshake with 0x50e92c90d7a57bd01f4184eda98f87c382da4e61 is already in flight.."
+                   "Internal rpc services error: Server error: Found existing transport.."
+                   "Connect remote rpc server failed: HTTP status client error (429 Too Many Requests)"
+                   "error sending request for url (https://node.rings.rs/)"
+                   ""))
+    (should-not (lispm-remote-rings-mismatch-p other)))
+  (should-not (lispm-remote-rings-mismatch-p nil))
+  (should (equal (lispm-remote--version-number "0.36.0-99feaaf") "0.36.0"))
+  (should (equal (lispm-remote--version-number "0.36.0") "0.36.0"))
+  (should-not (lispm-remote--version-number "unknown")))
+
+(ert-deftest lispm-remote-test-a-seed-of-another-rings-is-named-and-left-alone ()
+  "One failed join says what is wrong, on the window and in the Join
+step, and LispM Remote stops joining through that seed for a while."
+  (lispm-remote-test--with-home
+    (let ((lispm-remote-seeds '("https://seed.example"))
+          (joins 0)
+          (answer lispm-remote-test--mismatch))
+      (cl-letf (((symbol-function 'lispm-remote-node-connect)
+                 (lambda (_node _seed callback)
+                   (cl-incf joins)
+                   (funcall callback (and (not answer) "0xseed") answer)))
+                ((symbol-function 'lispm-remote--check-peers) #'ignore)
+                ;; The conclusion comes from the failure alone.
+                ((symbol-function 'url-retrieve)
+                 (lambda (url &rest _) (ert-fail (format "LispM Remote asked %s" url)))))
+        (lispm-remote--join)
+        (should (= joins 1))
+        (let ((home (lispm-remote-test--home-text)))
+          (should (string-search "✖ Not on Rings: no seed runs this Rings version" home))
+          (should (string-search "✖ seed.example runs another Rings version than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0." home))
+          (should (string-search "leaves seed.example alone for 30 minutes" home)))
+        (should (eq (alist-get 'join (lispm-remote--progress '(:token "t"))) 'failed))
+        ;; The checks every few seconds leave the seed alone.
+        (dotimes (_ 5)
+          (lispm-remote--join))
+        (should (= joins 1))
+        ;; Once the wait is over, LispM Remote tries once more.
+        (setf (alist-get "https://seed.example" lispm-remote--mismatches nil nil #'equal)
+              (- (float-time) lispm-remote-mismatch-seconds 1))
+        (lispm-remote--join)
+        (should (= joins 2))
+        (lispm-remote--join)
+        (should (= joins 2))
+        ;; A seed that lets it join is no longer named.
+        (setf (alist-get "https://seed.example" lispm-remote--mismatches nil nil #'equal)
+              (- (float-time) lispm-remote-mismatch-seconds 1)
+              answer nil)
+        (lispm-remote--join)
+        (should (= joins 3))
+        (should-not lispm-remote--mismatches)
+        (should-not (string-search "Rings version" (lispm-remote-test--home-text)))))))
+
+(ert-deftest lispm-remote-test-another-seed-is-still-joined-through ()
+  (lispm-remote-test--with-home
+    (let ((lispm-remote-seeds '("https://seed.example" "https://other.example"))
+          (joined nil))
+      (cl-letf (((symbol-function 'lispm-remote-node-connect)
+                 (lambda (_node seed callback)
+                   (push seed joined)
+                   (funcall callback nil (if (equal seed "https://seed.example")
+                                             lispm-remote-test--mismatch
+                                           "Joining took too long")))))
+        (lispm-remote--join)
+        (lispm-remote--join)
+        (should (equal joined '("https://other.example" "https://other.example"
+                                "https://seed.example")))
+        (let ((home (lispm-remote-test--home-text)))
+          (should (string-search "Joining Rings through other.example" home))
+          (should (string-search "✖ seed.example runs another Rings version than this LispM Remote (0.36.0)." home)))
+        (should (eq (alist-get 'join (lispm-remote--progress '(:token "t"))) 'active))))))
+
+(ert-deftest lispm-remote-test-a-seed-conclusion-names-this-rings ()
+  (let ((lispm-remote--rings "0.36.0"))
+    (should (equal (lispm-remote--seed-conclusion "https://node.rings.rs/")
+                   "node.rings.rs runs another Rings version than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0.")))
+  ;; Before the node said which Rings it runs.
+  (let ((lispm-remote--rings nil))
+    (should (equal (lispm-remote--seed-conclusion "https://node.rings.rs")
+                   "node.rings.rs runs another Rings version than this LispM Remote. Update LispM Remote, or join through another seed."))))
+
+(ert-deftest lispm-remote-test-a-device-of-another-version-is-named ()
+  (lispm-remote-test--with-home
+    (lispm-remote--save-devices
+     (list (list :peer lispm-remote-test--phone-did :key "00" :name "Test Phone"
+                 :paired-at 0)))
+    (lispm-remote--apply `((other-version ,lispm-remote-test--phone-did 2 1)
+                           (other-version "0x3333333333333333333333333333333333333333" 1 2)))
+    (let ((home (lispm-remote-test--home-text)))
+      (should (string-search "✖ Test Phone has a newer LispM Remote page (protocol 2; this Emacs speaks 1). Update LispM Remote." home))
+      (should (string-search "✖ A device has an older LispM Remote page (protocol 1; this Emacs speaks 2). Reload the page on it." home)))
+    ;; A device heard again in the same version is named once.
+    (lispm-remote--apply `((other-version ,lispm-remote-test--phone-did 2 1)))
+    (should (= (length lispm-remote--peer-versions) 2))))
+
+(ert-deftest lispm-remote-test-the-machines-name-the-other-version ()
+  "LispM answers a page of a later version in its own, and says which the
+page speaks; a page that hears LispM in another version stops there."
+  (skip-unless (lispm-remote-node-test--module-p))
+  (let* ((lispm-did "0x1111111111111111111111111111111111111111")
+         (lispm (lispm-remote-core-responder (lispm-remote-core-generate-static) lispm-did nil))
+         (phone (lispm-remote-core-initiator (lispm-remote-core-generate-static)
+                                             lispm-remote-test--phone-did nil))
+         (token (cadr (assq 'show-offer (lispm-remote-core-responder-offer lispm 120))))
+         (init (nth 2 (assq 'transmit (lispm-remote-core-initiator-pair phone token "Phone")))))
+    ;; The pairing request, as a page of the next version sends it.
+    (aset init 0 2)
+    (let* ((effects (lispm-remote-core-responder-receive lispm lispm-remote-test--phone-did init))
+           (answer (nth 2 (assq 'transmit effects))))
+      (should (equal (assq 'other-version effects)
+                     `(other-version ,lispm-remote-test--phone-did 2 1)))
+      (should (= (aref answer 0) 1))
+      ;; The answer, as LispM of the next version sends it.
+      (aset answer 0 2)
+      (should (equal (lispm-remote-core-initiator-receive phone lispm-did answer)
+                     '((failed other-version 2 1))))
+      ;; The page sends its request no more.
+      (should-not (lispm-remote-core-initiator-tick phone)))))
+
+(ert-deftest lispm-remote-test-the-node-says-which-rings-it-runs ()
+  (skip-unless (lispm-remote-node-test--module-p))
+  (let ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
+        (lispm-remote-seeds nil)
+        (lispm-remote--rings nil)
+        (built (with-temp-buffer
+                 (insert-file-contents (expand-file-name "Cargo.toml" lispm-remote-module-root))
+                 (re-search-forward "^rings-node = .*tag = \"v\\([^\"]+\\)\"")
+                 (match-string 1))))
+    (unwind-protect
+        (progn
+          (lispm-remote-mode 1)
+          (should (equal (lispm-remote-node-test--wait (lambda () lispm-remote--rings)
+                                                       "the node's Rings version")
+                         built)))
+      (lispm-remote-mode -1)
+      (delete-directory lispm-remote-directory t))))
 
 ;;; lispm-remote-test.el ends here

@@ -70,7 +70,7 @@ ip netns exec "$ns" ip link set lo up
 cd "$root"
 setpriv --reuid="$uid" --regid="$gid" --init-groups \
   env PATH="$PATH" HOME="$home" E2E_DIR="$dir" E2E_HOST="$host_ip" E2E_PORT="$port" \
-  emacs -Q --batch -L lisp -L test -l test/e2e/lispm.el >"$dir/emacs.log" 2>&1 &
+  emacs -Q --batch -L lisp -L "${LISPM_PREBUILT:-../lispm-prebuilt}" -L test -l test/e2e/lispm.el >"$dir/emacs.log" 2>&1 &
 emacs_pid=$!
 i=0
 until [ -s "$dir/ready" ]; do

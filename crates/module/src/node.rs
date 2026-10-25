@@ -40,9 +40,7 @@ use rings_core::delegation::DelegationBuilder;
 use rings_core::dht::Did;
 use rings_core::ecc::SecretKey;
 use rings_core::message::ReplayStorage;
-use rings_core::message::TRANSACTION_REPLAY_STORE_MAX_BYTES;
 use rings_core::storage::MemStorage;
-use rings_core::storage::file::FileStorage;
 use rings_node::native::config::DEFAULT_NETWORK_ID;
 use rings_node::processor::ProcessorBuilder;
 use rings_node::processor::ProcessorConfig;
@@ -60,11 +58,6 @@ pub const MAX_QUEUED: usize = 4096;
 const SHUTDOWN: Duration = Duration::from_secs(2);
 /// The Chord stabilization interval, in seconds.
 const STABILIZE_SECS: u64 = 3;
-
-/// The bytes a replay store may hold: as many as Rings says it must.
-fn replay_store_bytes() -> u32 {
-    u32::try_from(TRANSACTION_REPLAY_STORE_MAX_BYTES).unwrap_or(u32::MAX)
-}
 
 /// Something to call when events start waiting.
 pub trait Wake: Send + Sync + 'static {
@@ -189,6 +182,9 @@ pub enum NodeError {
     /// The runtime could not start.
     #[error("the node's runtime could not start: {0}")]
     Runtime(std::io::Error),
+    /// The node's store could not be prepared.
+    #[error("the node's store could not be prepared: {0}")]
+    Store(std::io::Error),
     /// Rings refused.
     #[error("Rings: {0}")]
     Rings(String),
@@ -293,15 +289,12 @@ impl Node {
         );
         let inbox = Arc::new(Inbox::new(waker));
         let shell = Shell::new(Arc::clone(&inbox));
-        let replay_directory = store.map(|directory| directory.join("transaction-replay"));
+        let replay: ReplayStorage = match store {
+            Some(store) => runtime.block_on(crate::store::replay(store))?,
+            None => Box::new(MemStorage::new()),
+        };
         let provider = runtime
             .block_on(async move {
-                let replay: ReplayStorage = match replay_directory {
-                    Some(directory) => Box::new(
-                        FileStorage::new_with_cap_and_path(replay_store_bytes(), directory).await?,
-                    ),
-                    None => Box::new(MemStorage::new()),
-                };
                 let processor = ProcessorBuilder::from_config(&config)?
                     .storage(Box::new(MemStorage::new()))
                     .replay_storage(replay)
@@ -473,6 +466,28 @@ mod tests {
         assert_eq!(events[MAX_QUEUED], Event::Sent { id: 9 });
         assert_eq!(events[MAX_QUEUED + 1], Event::Lost { frames: 3 });
         assert!(inbox.drain().is_empty());
+    }
+
+    #[test]
+    fn a_stopped_node_lets_its_store_open_again() {
+        // Rings locks a store while it is open (RingsNetwork/rings#1039),
+        // and Emacs starts a node again in the same process.  The store
+        // does not exist before the first start.
+        let scratch =
+            std::env::temp_dir().join(format!("lispm-remote-reopen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let store = scratch.join("store");
+        let account = Account::generate();
+        for _ in 0..2 {
+            let node = Node::start(
+                &account,
+                "stun://stun.l.google.com:19302",
+                Some(&store),
+                Silent,
+            );
+            node.unwrap().stop();
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
     }
 
     #[test]

@@ -73,6 +73,11 @@ export interface Situation {
   readonly state: boolean;
   /** The moment, in milliseconds. */
   readonly now: number;
+  /** What the page concluded from the seed running another Rings version,
+   * while it leaves the seed alone (version.ts). */
+  readonly seedProblem?: string | null;
+  /** What it concluded from LispM speaking another protocol version. */
+  readonly peerProblem?: string | null;
 }
 
 const TITLES: Record<StepName, string> = {
@@ -101,6 +106,9 @@ function join(s: Situation): Step {
   }
   if (!s.online) {
     return step("join", "failed", "This device is offline; it joins again once it has a network");
+  }
+  if (s.seedProblem) {
+    return step("join", "failed", s.seedProblem);
   }
   const wait = s.nextJoinAt - s.now;
   const again = wait > 1_500 ? ` · again in ${Math.ceil(wait / 1000)} s` : "";
@@ -133,6 +141,9 @@ function times(n: number): string {
 function reach(s: Situation): Step {
   if (s.open || (s.flow === "pair" && s.fingerprint !== null && s.sent)) {
     return step("reach", "done", s.sends > 1 ? `Sent ${times(s.sends)}` : "Sent to LispM");
+  }
+  if (s.peerProblem) {
+    return step("reach", "failed", s.peerProblem);
   }
   const busy = s.flow === "pair" ? s.phase === "pairing" : s.phase === "opening";
   if (!busy || s.peers === 0) {

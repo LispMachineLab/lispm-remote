@@ -172,6 +172,8 @@ function renderPair(current: Remote): void {
       open,
       state: open && settled(current),
       now,
+      seedProblem: current.seedProblem(),
+      peerProblem: current.peerProblem(),
     }),
     { scanning: scanning !== null, fingerprint: current.fingerprint },
   );
