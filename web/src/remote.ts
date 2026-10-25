@@ -23,6 +23,10 @@
  * - When LispM has said nothing for 30 s, the page asks for the state; if
  *   nothing comes within 12 s, it opens a new channel, in case Emacs
  *   restarted and forgot the old one.
+ * - When the seed or LispM runs another version, the page says so at once
+ *   and stops trying (version.ts): it leaves a seed of another Rings
+ *   version alone for 30 minutes, and opens no session with LispM of
+ *   another protocol version until it reloads or pairs again.
  *
  * Commands to LispM carry an `id` and are sent again every 2 s until LispM
  * answers with an `ack` or `error` of that id; LispM answers a repeated id
@@ -41,6 +45,14 @@ import { type Held, holding, stuck } from "./handshake.js";
 import { MOVED_NOTICE, moved, type Pairing } from "./pairing.js";
 import { expiry } from "./steps.js";
 import { Store } from "./store.js";
+import {
+  leftAlone,
+  peerConclusion,
+  ringsMismatch,
+  ringsOlder,
+  seedConclusion,
+  versionNumber,
+} from "./version.js";
 
 /** The namespace LispM Remote's frames travel under on Rings. */
 export const NAMESPACE = "lispm-remote/1";
@@ -146,7 +158,7 @@ type Effect =
   | { type: "opened"; channel: string }
   | { type: "delivered"; payload: Uint8Array }
   | { type: "closed"; reason: string }
-  | { type: "failed"; reason: string; detail?: string }
+  | { type: "failed"; reason: string; detail?: string; ours?: string }
   | { type: "discarded"; why: string };
 
 /** A command on its way to LispM. */
@@ -245,6 +257,15 @@ export class Remote {
   chat: Chat | null = null;
   /** What the owner said that the conversation does not show yet. */
   outbox: Outgoing[] = [];
+  /** The Rings version this page's node runs, once known. */
+  rings: string | null = null;
+  /** When a join last failed because the seed runs another Rings version,
+   * or 0, and the side whose Rings that failure said is older. */
+  mismatchAt = 0;
+  mismatchOlder: "ours" | "seed" | null = null;
+  /** The protocol versions of LispM and of this page, once LispM answered
+   * in another. */
+  otherVersion: { readonly theirs: number; readonly ours: number } | null = null;
 
   private following: string | null = null;
   private followedAt = 0;
@@ -356,7 +377,33 @@ export class Remote {
       void this.watch();
     });
     addEventListener("offline", () => this.lost());
+    // Which Rings this page runs, to say so when a seed runs another.
+    void (this.provider.request("nodeInfo", {}) as Promise<{ version?: string }>).then(
+      (info) => {
+        this.rings = versionNumber(info.version);
+      },
+      (error: unknown) => console.debug("lispm-remote: nodeInfo failed:", error),
+    );
     void this.watch();
+  }
+
+  /** Whether a join failed lately because the seed runs another Rings
+   * version, so that the page leaves it alone. */
+  mismatched(now = Date.now()): boolean {
+    return leftAlone(this.mismatchAt, now);
+  }
+
+  /** What the page concluded from the seed running another Rings version,
+   * while it leaves the seed alone. */
+  seedProblem(): string | null {
+    return this.peers === 0 && this.mismatched()
+      ? seedConclusion(this.seed, this.rings, this.mismatchOlder)
+      : null;
+  }
+
+  /** What the page concluded from LispM speaking another protocol version. */
+  peerProblem(): string | null {
+    return this.otherVersion && peerConclusion(this.otherVersion.theirs, this.otherVersion.ours);
   }
 
   /** How it is going, in a few words. */
@@ -364,8 +411,20 @@ export class Remote {
     if (navigator.onLine === false) {
       return { tone: "bad", text: "Offline" };
     }
+    if (this.seedProblem()) {
+      return { tone: "bad", text: `${this.seed} runs another Rings version` };
+    }
     if (this.peers === 0) {
       return { tone: "busy", text: "Joining Rings Network…" };
+    }
+    if (this.otherVersion) {
+      return {
+        tone: "bad",
+        text:
+          this.otherVersion.theirs < this.otherVersion.ours
+            ? "LispM Remote in Emacs is older than this page"
+            : "This page is older than LispM Remote in Emacs",
+      };
     }
     switch (this.phase) {
       case "pairing":
@@ -397,6 +456,8 @@ export class Remote {
     this.codeAt = Date.now();
     this.expires = expiry(token);
     this.notice = null;
+    // A new code may come from a LispM Remote updated meanwhile.
+    this.otherVersion = null;
     this.changed();
     void this.watch();
   }
@@ -555,8 +616,13 @@ export class Remote {
         this.joinError = null;
         this.joinAttempts = 0;
         this.held = null;
+        this.mismatchAt = 0;
         this.proceed();
-      } else if (navigator.onLine !== false && Date.now() - this.joinedAt >= JOIN_GRACE_MS) {
+      } else if (
+        navigator.onLine !== false &&
+        Date.now() - this.joinedAt >= JOIN_GRACE_MS &&
+        !this.mismatched()
+      ) {
         await this.join();
       }
     } catch (error) {
@@ -576,6 +642,11 @@ export class Remote {
     } catch (error) {
       this.joinError = messageOf(error);
       this.joinAttempts++;
+      if (ringsMismatch(this.joinError)) {
+        this.mismatchAt = Date.now();
+        this.mismatchOlder = ringsOlder(this.joinError);
+        console.warn(`lispm-remote: ${seedConclusion(this.seed, this.rings, this.mismatchOlder)}`);
+      }
       await this.release(this.joinError);
     }
   }
@@ -621,7 +692,8 @@ export class Remote {
       }
       this.state = null;
       this.step("pairing", () => this.machine.pair(token, this.options.name));
-    } else if (this.pairing && this.phase === "idle") {
+    } else if (this.pairing && this.phase === "idle" && !this.otherVersion) {
+      // LispM of another version would answer every try the same.
       this.step("opening", () => this.machine.connect());
     }
   }
@@ -722,11 +794,19 @@ export class Remote {
           this.tellChannel(false);
           break;
         case "failed":
+          if (effect.reason === "other-version") {
+            this.otherVersion = { theirs: Number(effect.detail), ours: Number(effect.ours) };
+            const conclusion = peerConclusion(this.otherVersion.theirs, this.otherVersion.ours);
+            this.notice = { tone: "error", text: conclusion };
+            console.warn(`lispm-remote: ${conclusion}`);
+          }
           if (this.phase === "pairing") {
             this.fingerprint = null;
             this.code = null;
             this.expires = null;
-            this.notice = { tone: "error", text: pairingFailure(effect) };
+            if (!this.otherVersion) {
+              this.notice = { tone: "error", text: pairingFailure(effect) };
+            }
           } else if (effect.reason === "timed-out") {
             this.unanswered = true;
           }

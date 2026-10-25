@@ -23,6 +23,7 @@
 //!   Pair/OpenInit again  the frame that opened (p, id) → its answer again, until p's first record
 //!   Record from p      channel (p, id) opens it        → delivered, or closed
 //!   Forget(p)          devices ← devices ∖ {p}, its channels closed
+//!   frame of version v ≠ VERSION from p  → refuse it in this version, say p speaks v
 //! ```
 //!
 //! Safety, witnessed by the scenarios:
@@ -64,6 +65,8 @@ use crate::wire::Frame;
 use crate::wire::Nonce;
 use crate::wire::Payload;
 use crate::wire::Refusal;
+use crate::wire::WireError;
+use crate::wire::channel_of;
 
 /// The most devices one responder keeps.
 pub const MAX_DEVICES: usize = 32;
@@ -327,6 +330,7 @@ impl Responder {
         entropy: &Entropy,
     ) -> Vec<Effect> {
         match Frame::decode(bytes) {
+            Err(WireError::Version(version)) => Self::other_version(from, version, bytes),
             Err(error) => vec![Effect::Discarded {
                 from,
                 why: Discard::Malformed(error),
@@ -347,6 +351,18 @@ impl Responder {
                 }]
             }
         }
+    }
+
+    /// A frame of the protocol's version `version`, which this end does
+    /// not speak: its sender is told on the frame's channel, in this end's
+    /// version, so that it learns which this end speaks.
+    fn other_version(from: PeerId, version: u8, bytes: &[u8]) -> Vec<Effect> {
+        let mut effects = Vec::with_capacity(2);
+        if let Some(channel) = channel_of(bytes) {
+            effects.push(refusal_frame(from.clone(), channel, Refusal::OtherVersion));
+        }
+        effects.push(Effect::OtherVersion { from, version });
+        effects
     }
 
     fn make_offer(

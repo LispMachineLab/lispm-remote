@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026  Ryan.K
 
 ;; Author: Ryan.K
-;; Version: 0.2.0
+;; Version: 0.2.1
 ;; Package-Requires: ((emacs "30.1") (lispm-prebuilt "0.1.0"))
 ;; Keywords: comm
 ;; URL: https://github.com/LispMachineLab/lispm-remote
@@ -31,6 +31,12 @@
 ;; `lispm-remote-mode' starts a Rings Network node, joins the network
 ;; through `lispm-remote-seeds' and rejoins it whenever it loses every
 ;; peer.  Paired devices then reach LispM by its DID, from anywhere.
+;;
+;; When the other end runs another version, LispM Remote says so at once,
+;; in its window (`M-x lispm-remote') and in the echo area, and does not
+;; keep trying: a seed of another Rings version is left alone for
+;; `lispm-remote-mismatch-seconds', and a device of another version of
+;; LispM Remote's protocol is told which version this one speaks.
 ;;
 ;; To pair, run `lispm-remote-pair': it shows a QR code.  Open
 ;; lispm.ai/remote on the device and scan it.  Both screens then show the
@@ -147,6 +153,14 @@ has lost every peer."
   :type 'natnum
   :group 'lispm-remote)
 
+(defcustom lispm-remote-mismatch-seconds 1800
+  "How long LispM Remote leaves a seed alone that runs another Rings
+version, before it tries to join through it again.  Turning
+`lispm-remote-mode' off and on tries at once, as does a seed newly in
+`lispm-remote-seeds'."
+  :type 'natnum
+  :group 'lispm-remote)
+
 (defcustom lispm-remote-chat-items 40
   "The most items of an agent's conversation a device is sent at once."
   :type 'natnum
@@ -219,6 +233,19 @@ session, and the drawing of the code, :rows and :image.")
 (defvar lispm-remote--peers nil
   "How many peers the node was connected to when last checked, or nil
 before the first check.")
+
+(defvar lispm-remote--rings nil
+  "The Rings version this Emacs's node runs, as \"0.36.0\", once known.")
+
+(defvar lispm-remote--mismatches nil
+  "The seeds that run another Rings version: a list of (SEED TIME OLDER),
+TIME when a join through SEED last failed so, and OLDER the side whose
+Rings the failure said is older, `ours' or `seed', or nil when it did
+not say.")
+
+(defvar lispm-remote--peer-versions nil
+  "The devices heard speaking another version of LispM Remote's protocol:
+a list of (PEER VERSION OURS), newest first.")
 
 (defconst lispm-remote--buffer "*LispM Remote*"
   "The buffer LispM Remote's window shows: its home, or pairing.")
@@ -316,6 +343,11 @@ nil when there is none."
         (lispm-remote-core-responder
          (lispm-remote--static) (lispm-remote-node-did lispm-remote--node)
          (mapcar #'lispm-remote--device-vector (lispm-remote--devices))))
+  ;; Which Rings it runs, to say so when a seed runs another.
+  (lispm-remote-node-request
+   lispm-remote--node "nodeInfo" nil
+   (lambda (result _error)
+     (setq lispm-remote--rings (lispm-remote--version-number (alist-get 'version result)))))
   (setq lispm-remote--timer (run-at-time 0 lispm-remote-check-seconds #'lispm-remote--check))
   (dolist (hook lispm-remote--change-hooks)
     (add-hook hook #'lispm-remote-state-changed)))
@@ -330,7 +362,8 @@ nil when there is none."
     (lispm-remote-node-stop lispm-remote--node))
   (setq lispm-remote--node nil lispm-remote--machine nil lispm-remote--timer nil
         lispm-remote--state-timer nil lispm-remote--sessions nil lispm-remote--offer nil
-        lispm-remote--answers nil lispm-remote--peers nil))
+        lispm-remote--answers nil lispm-remote--peers nil lispm-remote--mismatches nil
+        lispm-remote--peer-versions nil))
 
 (defun lispm-remote--check ()
   "Let an expired offer end, send a changed state, and rejoin the network
@@ -358,14 +391,164 @@ changed; with REJOIN, join the network again when there are none."
              (lispm-remote--join))))))))
 
 (defun lispm-remote--join ()
-  "Join the network through `lispm-remote-seeds'."
-  (dolist (seed lispm-remote-seeds)
+  "Join the network through `lispm-remote-seeds', but through none that
+ran another Rings version lately."
+  (dolist (seed (seq-remove #'lispm-remote--mismatched-p lispm-remote-seeds))
     (lispm-remote-node-connect
      lispm-remote--node seed
      (lambda (_did error)
-       (if error
-           (lispm-remote--log "joining through %s failed: %s" seed error)
-         (lispm-remote--check-peers))))))
+       (cond ((not error)
+              (setq lispm-remote--mismatches
+                    (assoc-delete-all seed lispm-remote--mismatches))
+              (lispm-remote--check-peers))
+             (t
+              (lispm-remote--log "joining through %s failed: %s" seed error)
+              (when (lispm-remote-rings-mismatch-p error)
+                (lispm-remote--mismatch seed error))))))))
+
+;;;; Versions
+
+;; Each end LispM Remote talks to may run another version than this one.
+;;
+;; - The seed.  This Rings's handshake carries no version: a seed of
+;;   another Rings version only fails to read this node's offer, or this
+;;   node its answer.  A seed whose handshake carries a wire version
+;;   (RingsNetwork/rings#1106) refuses this node by name instead, and its
+;;   words say which side is older (`lispm-remote--rings-older').  Joining
+;;   again would fail the same way, and a seed refuses an address that
+;;   keeps trying, so LispM Remote leaves it alone for
+;;   `lispm-remote-mismatch-seconds' and says what it concluded.
+;; - A device.  Every frame starts with the version of LispM Remote's
+;;   protocol it is in.  The machine answers a frame of another version in
+;;   this one, so the device learns which this one speaks, and says which
+;;   the device speaks: `(other-version PEER VERSION OURS)'.
+
+(defun lispm-remote--version-number (text)
+  "Return the version TEXT starts with, as \"0.36.0\", or nil.
+Rings's node says \"0.36.0-99feaaf\" when built from a checkout, and its
+releases are tagged \"v0.36.0\"."
+  (and (stringp text)
+       (string-match "\\`v?\\([0-9]+\\(?:\\.[0-9]+\\)*\\)" text)
+       (match-string 1 text)))
+
+(defun lispm-remote-rings-mismatch-p (error)
+  "Return non-nil when ERROR, why joining through a seed failed, says
+that the seed runs another Rings version.
+A seed that cannot read this node's offer answers \"Answer offer info
+failed: Codec deserialization error\"; this node fails to read a seed's
+answer with \"Decode error\"; a seed with a wire version refuses one from
+before wire versioning with \"Incompatible wire version\"."
+  (and (stringp error)
+       (string-match-p
+        "Codec deserialization error\\|\\bDecode error\\b\\|Incompatible wire version" error)))
+
+(defun lispm-remote--rings-older (error)
+  "Return the side whose Rings ERROR says is older, `ours' or `seed', or
+nil when it does not say.
+A node with a wire version names two in its refusal, \"Incompatible wire
+version: ours is 1, the peer's is from before wire versioning\": its own,
+and the other end's, a number or, oldest of all, from before wire
+versioning.  The refusal is the seed's when it comes after \"Server
+returned rpc error\", as this Rings words a seed's answer, and this
+node's otherwise."
+  (when (and (stringp error)
+             (string-match "Incompatible wire version: ours is \\([0-9]+\\), the peer's is \\([0-9]+\\|from before wire versioning\\)"
+                           error))
+    (let ((refusing (string-to-number (match-string 1 error)))
+          ;; From before wire versioning reads as 0, below every version.
+          (other (string-to-number (match-string 2 error)))
+          (by-seed (string-match-p "Server returned rpc error[^:]*: Incompatible wire version" error)))
+      (cond ((= other refusing) nil)
+            ;; The other end is this node.
+            (by-seed (if (< other refusing) 'ours 'seed))
+            ;; The other end is the seed.
+            (t (if (< other refusing) 'seed 'ours))))))
+
+(defun lispm-remote--mismatched-p (seed)
+  "Return non-nil when SEED ran another Rings version less than
+`lispm-remote-mismatch-seconds' ago."
+  (when-let* ((at (car (alist-get seed lispm-remote--mismatches nil nil #'equal))))
+    (< (- (float-time) at) lispm-remote-mismatch-seconds)))
+
+(defun lispm-remote--mismatch (seed error)
+  "Note that SEED runs another Rings version, as ERROR said, and tell the
+owner the first time."
+  (let ((again (assoc seed lispm-remote--mismatches)))
+    (setf (alist-get seed lispm-remote--mismatches nil nil #'equal)
+          (list (float-time) (lispm-remote--rings-older error)))
+    (unless again
+      (message "LispM Remote: %s" (lispm-remote--seed-conclusion seed)))
+    (lispm-remote--refresh)))
+
+(defun lispm-remote--host (seed)
+  "Return SEED's host, as the owner knows it."
+  (string-remove-suffix "/" (replace-regexp-in-string "\\`https?://" "" seed)))
+
+(defun lispm-remote--seed-conclusion (seed)
+  "Return what LispM Remote concludes from SEED running another Rings
+version, and what to do: which side is older, when the failure said."
+  (let ((host (lispm-remote--host seed))
+        (ours lispm-remote--rings)
+        (older (nth 1 (alist-get seed lispm-remote--mismatches nil nil #'equal))))
+    (cond ((eq older 'ours)
+           (format "%s runs a newer Rings than this LispM Remote%s. Update LispM Remote."
+                   host (if ours (format " (%s)" ours) "")))
+          ((eq older 'seed)
+           (format "%s runs an older Rings than this LispM Remote%s. Join through another seed."
+                   host (if ours (format " (%s)" ours) "")))
+          (ours
+           (format "%s runs another Rings version than this LispM Remote (%s). Update LispM Remote, or join through a seed of Rings %s."
+                   host ours ours))
+          (t
+           (format "%s runs another Rings version than this LispM Remote. Update LispM Remote, or join through another seed."
+                   host)))))
+
+(defun lispm-remote--other-version (peer version ours)
+  "Note that PEER speaks VERSION of the protocol, this end OURS, and tell
+the owner the first time."
+  (let ((again (equal (assoc peer lispm-remote--peer-versions) (list peer version ours))))
+    (setq lispm-remote--peer-versions
+          (cons (list peer version ours) (assoc-delete-all peer lispm-remote--peer-versions)))
+    (lispm-remote--log "%s speaks protocol %d, this LispM Remote %d" peer version ours)
+    (unless again
+      (message "LispM Remote: %s" (lispm-remote--peer-conclusion peer version ours)))
+    (lispm-remote--refresh)))
+
+(defun lispm-remote--peer-conclusion (peer version ours)
+  "Return what LispM Remote concludes from PEER speaking VERSION of the
+protocol, this end OURS: which is older, and what to do."
+  (let ((name (or (plist-get (seq-find (lambda (device) (equal (plist-get device :peer) peer))
+                                       (lispm-remote--devices))
+                             :name)
+                  "A device")))
+    (if (> version ours)
+        (format "%s has a newer LispM Remote page (protocol %d; this Emacs speaks %d). Update LispM Remote."
+                name version ours)
+      (format "%s has an older LispM Remote page (protocol %d; this Emacs speaks %d). Reload the page on it."
+              name version ours))))
+
+(defun lispm-remote--stranded-p ()
+  "Return non-nil when no seed is left to join through: every one ran
+another Rings version lately."
+  (and lispm-remote-seeds (seq-every-p #'lispm-remote--mismatched-p lispm-remote-seeds)))
+
+(defun lispm-remote--insert-versions ()
+  "Insert what LispM Remote concluded of the ends that run another
+version, if any: seeds while it is off the network, and devices."
+  (unless (and lispm-remote--peers (> lispm-remote--peers 0))
+    (dolist (seed (seq-filter #'lispm-remote--mismatched-p lispm-remote-seeds))
+      (insert (propertize (concat "✖ " (lispm-remote--seed-conclusion seed))
+                          'face 'lispm-remote-failed)
+              "\n"
+              (propertize (format "  LispM Remote leaves %s alone for %d minutes; turn it off and on to try at once."
+                                  (lispm-remote--host seed)
+                                  (/ lispm-remote-mismatch-seconds 60))
+                          'face 'lispm-remote-pending)
+              "\n")))
+  (pcase-dolist (`(,peer ,version ,ours) lispm-remote--peer-versions)
+    (insert (propertize (concat "✖ " (lispm-remote--peer-conclusion peer version ours))
+                        'face 'lispm-remote-failed)
+            "\n")))
 
 ;;;; Frames and effects
 
@@ -415,6 +598,8 @@ changed; with REJOIN, join the network again when there are none."
                     (lispm-remote--devices)))
        (lispm-remote--refresh))
       (`(opened ,peer ,channel)
+       ;; A session opened, so the device speaks this version now.
+       (setq lispm-remote--peer-versions (assoc-delete-all peer lispm-remote--peer-versions))
        (push (lispm-remote--session-create :peer peer :channel channel) lispm-remote--sessions)
        (lispm-remote--send-state peer channel)
        (if (equal peer (plist-get lispm-remote--offer :paired-peer))
@@ -431,7 +616,9 @@ changed; with REJOIN, join the network again when there are none."
        (lispm-remote--refresh)
        (run-hook-with-args 'lispm-remote-session-functions peer channel 'closed))
       (`(discarded ,from ,why)
-       (lispm-remote--log "discarded a frame from %s: %s" from why)))))
+       (lispm-remote--log "discarded a frame from %s: %s" from why))
+      (`(other-version ,from ,version ,ours)
+       (lispm-remote--other-version from version ours)))))
 
 (defun lispm-remote--session-p (session peer channel)
   "Return non-nil when SESSION is the channel CHANNEL of PEER."
@@ -859,7 +1046,7 @@ its state, `done', `active', `pending' or `failed'."
   (let* ((ended (plist-get offer :ended))
          (claimed (or (plist-get offer :fingerprint) (plist-get offer :paired)))
          (joined (or claimed (and lispm-remote--peers (> lispm-remote--peers 0))))
-         (states `((join . ,(if joined 'done 'active))
+         (states `((join . ,(cond (joined 'done) ((lispm-remote--stranded-p) 'failed) (t 'active)))
                    (scan . ,(cond (claimed 'done) ((plist-get offer :token) 'active) (t 'pending)))
                    (reach . ,(if claimed 'done 'pending))
                    (confirm . ,(cond ((plist-get offer :paired) 'done) (claimed 'active) (t 'pending)))
@@ -1125,11 +1312,15 @@ STYLE is t for the main button, `danger' for a refusal, nil otherwise."
 (defun lispm-remote--network-line ()
   "Return a line saying how the node stands on the network."
   (let ((seeds (mapconcat (lambda (seed) (string-remove-prefix "https://" seed))
-                          lispm-remote-seeds ", ")))
+                          (seq-remove #'lispm-remote--mismatched-p lispm-remote-seeds)
+                          ", ")))
     (cond ((and lispm-remote--peers (> lispm-remote--peers 0))
            (propertize (format "On Rings, %d %s" lispm-remote--peers
                                (if (= lispm-remote--peers 1) "peer" "peers"))
                        'face 'lispm-remote-done))
+          ((lispm-remote--stranded-p)
+           (propertize "✖ Not on Rings: no seed runs this Rings version"
+                       'face 'lispm-remote-failed))
           (t (propertize (format "%c Joining Rings%s"
                                  (aref "◐◓◑◒" (% (truncate (float-time)) 4))
                                  (if (string-empty-p seeds) "" (concat " through " seeds)))
@@ -1182,7 +1373,8 @@ STYLE is t for the main button, `danger' for a refusal, nil otherwise."
       (insert (format "\nOpen %s on your phone or computer and scan this code.\nIt works once.\n\n"
                       (propertize page 'face 'bold)))
       (lispm-remote--insert-countdown offer)
-      (insert "\n" (lispm-remote--network-line) "\n"))
+      (insert "\n" (lispm-remote--network-line) "\n")
+      (lispm-remote--insert-versions))
      (t
       (insert "No code yet.\n\n")
       (lispm-remote--insert-button "New code" "g" #'lispm-remote-pair t)
@@ -1348,7 +1540,10 @@ key stays, so the new pairing replaces the old record."
         (lispm-remote--insert-button "Turn off" "t" #'lispm-remote-toggle)
         (insert "\n" (propertize (format "This Emacs is %s on Rings"
                                           (lispm-remote-node-did lispm-remote--node))
-                                  'face 'lispm-remote-pending)))
+                                  'face 'lispm-remote-pending)
+                "\n")
+        (lispm-remote--insert-versions)
+        (delete-char -1))
     (insert (propertize "○ Off: no device can reach LispM" 'face 'lispm-remote-pending) "    ")
     (lispm-remote--insert-button "Turn on" "t" #'lispm-remote-toggle t))
   (insert "\n\n" (propertize "Paired devices" 'face 'bold) "\n\n")

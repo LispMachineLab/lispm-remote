@@ -20,6 +20,7 @@
 //!   Closed(r)                    ↦ closed             reason: kebab(r)
 //!   Failed(Refused(r))           ↦ failed             reason: refused, detail: kebab(r)
 //!   Failed(Handshake(e))         ↦ failed             reason: handshake, detail: e
+//!   Failed(OtherVersion(v))      ↦ failed             reason: other-version, detail: v, ours: VERSION
 //!   Failed(f)                    ↦ failed             reason: kebab(f)
 //!   Discarded(d)                 ↦ discarded          why: d, as Rust prints it
 //! ```
@@ -45,6 +46,7 @@ use lispm_remote_protocol::Payload;
 use lispm_remote_protocol::PeerId;
 use lispm_remote_protocol::PublicKey;
 use lispm_remote_protocol::StaticSecret;
+use lispm_remote_protocol::VERSION;
 use lispm_remote_protocol::WireError;
 use lispm_remote_protocol::device::CommandError;
 use lispm_remote_protocol::device::Effect;
@@ -199,6 +201,14 @@ pub fn shape(effect: Effect) -> Shape {
             vec![
                 text("reason", "handshake".to_owned()),
                 text("detail", error.to_string()),
+            ],
+        ),
+        Effect::Failed(Failure::OtherVersion(version)) => Shape::new(
+            "failed",
+            vec![
+                text("reason", "other-version".to_owned()),
+                text("detail", version.to_string()),
+                text("ours", VERSION.to_string()),
             ],
         ),
         Effect::Failed(failure) => Shape::new("failed", vec![text("reason", kebab(failure))]),
@@ -538,6 +548,32 @@ mod tests {
         assert_eq!(kinds(&refused), ["unpaired", "failed"]);
         assert_eq!(refused[1].text("reason"), Some("refused"));
         assert_eq!(refused[1].text("detail"), Some("not-paired"));
+    }
+
+    #[test]
+    fn a_phone_hears_which_version_lispm_speaks() {
+        let mut lispm = Lispm::new();
+        let (_, stored) = paired(&mut lispm);
+        let mut phone = Machine::new(&secret(2), PHONE, Some(stored)).unwrap();
+        let open = phone.step(START, Command::Connect, entropy(7)).unwrap();
+        // LispM of a later version answers in its own.
+        let later = VERSION + 1;
+        let answer = lispm
+            .hear(START, &open)
+            .into_iter()
+            .map(|effect| match effect {
+                lispm::Effect::Transmit { to, mut frame } => {
+                    frame[0] = later;
+                    lispm::Effect::Transmit { to, frame }
+                }
+                other => other,
+            })
+            .collect();
+        let failed = hear(&mut phone, START, answer);
+        assert_eq!(kinds(&failed), ["failed"]);
+        assert_eq!(failed[0].text("reason"), Some("other-version"));
+        assert_eq!(failed[0].text("detail"), Some(later.to_string().as_str()));
+        assert_eq!(failed[0].text("ours"), Some(VERSION.to_string().as_str()));
     }
 
     #[test]
