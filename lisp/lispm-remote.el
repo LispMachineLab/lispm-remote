@@ -410,14 +410,16 @@ ran another Rings version lately."
 
 ;; Each end LispM Remote talks to may run another version than this one.
 ;;
-;; - The seed.  This Rings's handshake carries no version: a seed of
-;;   another Rings version only fails to read this node's offer, or this
-;;   node its answer.  A seed whose handshake carries a wire version
-;;   (RingsNetwork/rings#1106) refuses this node by name instead, and its
-;;   words say which side is older (`lispm-remote--rings-older').  Joining
-;;   again would fail the same way, and a seed refuses an address that
-;;   keeps trying, so LispM Remote leaves it alone for
-;;   `lispm-remote-mismatch-seconds' and says what it concluded.
+;; - The seed.  Rings's handshake carries a wire version since 0.37
+;;   (RingsNetwork/rings#1104).  This node reads the seed's from its
+;;   `nodeDid' before it offers, and refuses a seed of another wire
+;;   version, naming both versions (`lispm-remote--rings-older').  A seed
+;;   from before wire versioning, 0.36 or older, may also fail to read the
+;;   offer, or this node its answer, in words
+;;   `lispm-remote-rings-mismatch-p' knows.  Joining again would fail the
+;;   same way, and a seed refuses an address that keeps trying, so LispM
+;;   Remote leaves it alone for `lispm-remote-mismatch-seconds' and says
+;;   what it concluded.
 ;; - A device.  Every frame starts with the version of LispM Remote's
 ;;   protocol it is in.  The machine answers a frame of another version in
 ;;   this one, so the device learns which this one speaks, and says which
@@ -445,24 +447,36 @@ before wire versioning with \"Incompatible wire version\"."
 (defun lispm-remote--rings-older (error)
   "Return the side whose Rings ERROR says is older, `ours' or `seed', or
 nil when it does not say.
-A node with a wire version names two in its refusal, \"Incompatible wire
-version: ours is 1, the peer's is from before wire versioning\": its own,
-and the other end's, a number or, oldest of all, from before wire
-versioning.  The refusal is the seed's when it comes after \"Server
-returned rpc error\", as this Rings words a seed's answer, and this
-node's otherwise."
-  (when (and (stringp error)
-             (string-match "Incompatible wire version: ours is \\([0-9]+\\), the peer's is \\([0-9]+\\|from before wire versioning\\)"
-                           error))
-    (let ((refusing (string-to-number (match-string 1 error)))
-          ;; From before wire versioning reads as 0, below every version.
-          (other (string-to-number (match-string 2 error)))
-          (by-seed (string-match-p "Server returned rpc error[^:]*: Incompatible wire version" error)))
-      (cond ((= other refusing) nil)
-            ;; The other end is this node.
-            (by-seed (if (< other refusing) 'ours 'seed))
-            ;; The other end is the seed.
-            (t (if (< other refusing) 'seed 'ours))))))
+A node with a wire version refuses a peer of another with the JSON-RPC
+data {\"ours\": n, \"theirs\": m}, and the words \"Incompatible wire
+version: ours is n, the peer's is m\", m a number or, oldest of all,
+\"from before wire versioning\" (data null).  Since Rings 0.37 this node
+states a seed's refusal as its own, so the data that ERROR carries, as
+its text property `lispm-remote-node-data', is from this node's side.
+Without data, the words are read: a refusal after \"Server returned rpc
+error\" is the seed's, as Rings 0.36 relayed it, and this node's
+otherwise."
+  (let ((data (and (stringp error) (> (length error) 0)
+                   (get-text-property 0 'lispm-remote-node-data error))))
+    (cond
+     ((and (consp data) (integerp (alist-get 'ours data)))
+      ;; From before wire versioning counts as 0, below every version.
+      (lispm-remote--older (alist-get 'ours data) (or (alist-get 'theirs data) 0)))
+     ((and (stringp error)
+           (string-match "Incompatible wire version: ours is \\([0-9]+\\), the peer's is \\([0-9]+\\|from before wire versioning\\)"
+                         error))
+      (let ((refusing (string-to-number (match-string 1 error)))
+            (other (string-to-number (match-string 2 error))))
+        (if (string-match-p "Server returned rpc error[^:]*: Incompatible wire version" error)
+            (lispm-remote--older other refusing)
+          (lispm-remote--older refusing other)))))))
+
+(defun lispm-remote--older (ours theirs)
+  "Return the side whose wire version is older, `ours' or `seed', from
+this node's OURS and the seed's THEIRS, 0 from before wire versioning;
+nil when they are the same."
+  (cond ((< ours theirs) 'ours)
+        ((> ours theirs) 'seed)))
 
 (defun lispm-remote--mismatched-p (seed)
   "Return non-nil when SEED ran another Rings version less than
