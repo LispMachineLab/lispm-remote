@@ -189,7 +189,9 @@ with nil and a message when it could not be sent."
 (defun lispm-remote-node-request (node method params &optional callback)
   "Start the Rings JSON-RPC request METHOD on NODE with PARAMS, an alist.
 CALLBACK, when given, is called with the result, parsed into alists and
-lists, and nil; or with nil and Rings's message when it failed."
+lists, and nil; or with nil and Rings's message when it failed.  When the
+JSON-RPC error it failed with has data, the message carries it, parsed,
+as its text property `lispm-remote-node-data'."
   (let ((json (json-serialize (or params (make-hash-table)))))
     (lispm-remote-node--expect
      node (lispm-remote-core-request (lispm-remote-node-handle node) method json) callback)))
@@ -221,6 +223,15 @@ a message."
       (remhash id callbacks)
       (apply callback arguments))))
 
+(defun lispm-remote-node--failure (message data)
+  "Return MESSAGE, why work failed, with DATA, the JSON of the JSON-RPC
+error's data or nil, parsed, as its text property `lispm-remote-node-data'."
+  (if (and data (> (length message) 0))
+      (propertize message 'lispm-remote-node-data
+                  (json-parse-string data :object-type 'alist :array-type 'list
+                                     :null-object nil :false-object nil))
+    message))
+
 (defun lispm-remote-node--dispatch (node event)
   "Act on EVENT, which NODE's module reported."
   (pcase event
@@ -234,7 +245,8 @@ a message."
       node id (json-parse-string json :object-type 'alist :array-type 'list
                                  :null-object nil :false-object nil)
       nil))
-    (`(failed ,id ,message) (lispm-remote-node--finish node id nil message))
+    (`(failed ,id ,message ,data)
+     (lispm-remote-node--finish node id nil (lispm-remote-node--failure message data)))
     (`(lost ,count)
      (display-warning 'lispm-remote
                       (format "%d frames were lost while Emacs was busy" count)))))

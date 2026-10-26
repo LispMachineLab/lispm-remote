@@ -710,6 +710,34 @@ tester, bound as BINDINGS says: (PHONE)."
       (kill-buffer lispm-remote--buffer)
       (delete-directory lispm-remote-directory t))))
 
+(ert-deftest lispm-remote-test-a-device-paired-before-rings-0.37-is-told-to-pair-again ()
+  (let ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
+        (lispm-remote--view 'home)
+        (old '(:peer "0x1f0f8a4b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f" :key "k" :name "Old Phone"
+                     :paired-at 1792700000000)))
+    (unwind-protect
+        (progn
+          (lispm-remote--save-devices (list old))
+          (with-current-buffer (lispm-remote--render)
+            (should (string-search "Old Phone" (buffer-string)))
+            (should (string-search lispm-remote--moved-device-text (buffer-string))))
+          ;; The phone pairs again at its new address with the same key: the
+          ;; machine stores the new record and forgets the old one.
+          (lispm-remote--apply
+           `((paired "0x3bbba89641b3470b86f516a9e91862ce6b23765b" "k" "Old Phone" 1792800000000)
+             (forgotten ,(plist-get old :peer))))
+          (let ((devices (lispm-remote--devices)))
+            (should (= (length devices) 1))
+            (should (equal (plist-get (car devices) :rings) lispm-remote--rings)))
+          (setq lispm-remote--view 'home)
+          (with-current-buffer (lispm-remote--render)
+            (should (string-search "Old Phone" (buffer-string)))
+            (should-not (string-search lispm-remote--moved-device-text (buffer-string)))))
+      (when (buffer-live-p (get-buffer lispm-remote--buffer))
+        (kill-buffer lispm-remote--buffer))
+      (setq lispm-remote--offer nil)
+      (delete-directory lispm-remote-directory t))))
+
 (ert-deftest lispm-remote-test-home-follows-pairing-and-sessions ()
   (skip-unless (lispm-remote-node-test--module-p))
   (lispm-remote-test--with-world (_relay phone)
@@ -985,11 +1013,23 @@ to the words that tell it.")
 
 (defconst lispm-remote-test--refused
   "Internal rpc services error: Server error: Connect remote rpc server failed: Server returned rpc error Server error: Incompatible wire version: ours is 1, the peer's is from before wire versioning..."
-  "Why this LispM Remote cannot join through a seed whose handshake
-carries a wire version (RingsNetwork/rings#1106), word for word.  The
-seed's JSON-RPC code and data do not come through; the module's test
-`a_seed_with_a_wire_version_refuses_this_node_in_words' holds Rings to
-these words, from a stand-in seed.")
+  "Why LispM Remote 0.2, on Rings 0.36, cannot join through a seed whose
+handshake carries a wire version (RingsNetwork/rings#1106), word for
+word.  Rings 0.36 relays the seed's words, so their \"ours\" is the
+seed's, and drops its JSON-RPC code and data; LispM Remote 0.2's module
+tests held Rings 0.36 to these words, from a stand-in seed.")
+
+(defun lispm-remote-test--refusal (theirs data)
+  "Return why this LispM Remote refuses a seed of the wire version
+THEIRS, a number or \"from before wire versioning\", as its module gives
+it: the words, with DATA, the seed's version in the JSON-RPC data, as
+their text property.  The module's tests
+`a_seed_of_a_later_wire_version_is_refused_before_the_offer' and
+`a_seed_from_before_wire_versioning_is_refused_before_the_offer' hold
+Rings to both."
+  (propertize (format "Internal rpc services error: Server error: Incompatible wire version: ours is 1, the peer's is %s.."
+                      theirs)
+              'lispm-remote-node-data `((ours . 1) (theirs . ,data))))
 
 (defconst lispm-remote-test--phone-did "0x2222222222222222222222222222222222222222"
   "The DID of a device in the tests of versions.")
@@ -1132,6 +1172,39 @@ step, and LispM Remote stops joining through that seed for a while."
   (should-not (lispm-remote--rings-older lispm-remote-test--mismatch))
   (should-not (lispm-remote--rings-older nil)))
 
+(ert-deftest lispm-remote-test-a-refusal-with-data-is-read-from-this-side ()
+  ;; Rings 0.37 refuses a seed by its nodeDid, from this node's side, and
+  ;; gives the versions as data.
+  (should (eq (lispm-remote--rings-older (lispm-remote-test--refusal 2 2)) 'ours))
+  (should (eq (lispm-remote--rings-older
+               (lispm-remote-test--refusal "from before wire versioning" nil))
+              'seed))
+  (should-not (lispm-remote--rings-older (lispm-remote-test--refusal 1 1)))
+  ;; The data counts, whatever the words: they are from this side.
+  (should (eq (lispm-remote--rings-older
+               (propertize lispm-remote-test--refused
+                           'lispm-remote-node-data '((ours . 1) (theirs . 2))))
+              'ours)))
+
+(ert-deftest lispm-remote-test-seeds-of-other-wire-versions-are-named ()
+  "LispM Remote on Rings 0.37: one failed join names the older side, from
+the versions the refusal carries."
+  (dolist (case `((,(lispm-remote-test--refusal 2 2)
+                   "✖ node.rings.rs runs a newer Rings than this LispM Remote (0.36.0). Update LispM Remote.")
+                  (,(lispm-remote-test--refusal "from before wire versioning" nil)
+                   "✖ node.rings.rs runs an older Rings than this LispM Remote (0.36.0). Join through another seed.")))
+    (lispm-remote-test--with-home
+      (let ((lispm-remote-seeds '("https://node.rings.rs"))
+            (joins 0))
+        (cl-letf (((symbol-function 'lispm-remote-node-connect)
+                   (lambda (_node _seed callback)
+                     (cl-incf joins)
+                     (funcall callback nil (car case)))))
+          (lispm-remote--join)
+          (lispm-remote--join)
+          (should (= joins 1))
+          (should (string-search (cadr case) (lispm-remote-test--home-text))))))))
+
 (ert-deftest lispm-remote-test-a-seed-with-a-wire-version-is-named-newer ()
   "A seed whose handshake carries a wire version refuses this node by
 name: one failed join says that this LispM Remote is the older, and the
@@ -1194,9 +1267,10 @@ page speaks; a page that hears LispM in another version stops there."
   (let ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
         (lispm-remote-seeds nil)
         (lispm-remote--rings nil)
+        ;; The version Cargo resolved, whether Cargo.toml takes a tag or a rev.
         (built (with-temp-buffer
-                 (insert-file-contents (expand-file-name "Cargo.toml" lispm-remote-module-root))
-                 (re-search-forward "^rings-node = .*tag = \"v\\([^\"]+\\)\"")
+                 (insert-file-contents (expand-file-name "Cargo.lock" lispm-remote-module-root))
+                 (re-search-forward "^name = \"rings-node\"\nversion = \"\\([^\"]+\\)\"")
                  (match-string 1))))
     (unwind-protect
         (progn

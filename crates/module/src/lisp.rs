@@ -12,7 +12,8 @@
 //!   (frame FROM BYTES)      a peer's frame, FROM its DID, BYTES unibyte
 //!   (sent ID)               a send left
 //!   (reply ID JSON)         a request answered
-//!   (failed ID MESSAGE)     a send or request failed
+//!   (failed ID MESSAGE DATA) a send or request failed; DATA the JSON of
+//!                           its JSON-RPC error's data, or nil
 //!   (lost COUNT)            frames dropped while Emacs did not collect
 //! ```
 //!
@@ -138,7 +139,9 @@ fn event_value(env: &Env, event: Event) -> Result<Value<'_>> {
         Event::Frame { from, payload } => env.list((env.intern("frame")?, from, payload)),
         Event::Sent { id } => env.list((env.intern("sent")?, i64::try_from(id)?)),
         Event::Reply { id, result } => env.list((env.intern("reply")?, i64::try_from(id)?, result)),
-        Event::Failed { id, error } => env.list((env.intern("failed")?, i64::try_from(id)?, error)),
+        Event::Failed { id, error, data } => {
+            env.list((env.intern("failed")?, i64::try_from(id)?, error, data))
+        }
         Event::Lost { frames } => env.list((env.intern("lost")?, i64::try_from(frames)?)),
     }
 }

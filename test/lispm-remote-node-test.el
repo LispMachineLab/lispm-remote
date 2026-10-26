@@ -157,8 +157,29 @@ as the page does."
                                      (lambda (result error) (setq outcome (list result error))))
           (lispm-remote-node-test--wait (lambda () outcome))
           (should-not (car outcome))
-          (should (stringp (cadr outcome))))
+          (should (stringp (cadr outcome)))
+          ;; Its JSON-RPC error has no data.
+          (should-not (get-text-property 0 'lispm-remote-node-data (cadr outcome))))
       (lispm-remote-node-stop a))))
+
+(ert-deftest lispm-remote-node-test-a-failure-carries-its-data ()
+  "A request that failed with a JSON-RPC error with data, as Rings refuses
+a seed of another wire version, gives its callback the message with the
+data, parsed, as its text property."
+  (let ((node (lispm-remote-node--create))
+        outcome)
+    (lispm-remote-node--expect node 7 (lambda (result error) (setq outcome (list result error))))
+    (lispm-remote-node--dispatch
+     node '(failed 7 "Incompatible wire version: ours is 1, the peer's is from before wire versioning."
+                   "{\"ours\":1,\"theirs\":null}"))
+    (should-not (car outcome))
+    (should (string-prefix-p "Incompatible wire version" (cadr outcome)))
+    (should (equal (get-text-property 0 'lispm-remote-node-data (cadr outcome))
+                   '((ours . 1) (theirs))))
+    (lispm-remote-node--expect node 8 (lambda (result error) (setq outcome (list result error))))
+    (lispm-remote-node--dispatch node '(failed 8 "Connection not found." nil))
+    (should (equal outcome '(nil "Connection not found.")))
+    (should-not (get-text-property 0 'lispm-remote-node-data (cadr outcome)))))
 
 (ert-deftest lispm-remote-node-test-without-a-pin-download-explains ()
   (let* ((directory (make-temp-file "lispm-remote-pins" t))

@@ -42,6 +42,7 @@ import initDevice, { generateStatic, Initiator } from "lispm-remote-web";
 import initRings, { ProcessorConfig, Provider, type ProviderListener } from "rings-node";
 import { account, delegatee } from "./account.js";
 import { type Held, holding, stuck } from "./handshake.js";
+import { MOVED_NOTICE, moved, type Pairing } from "./pairing.js";
 import { expiry } from "./steps.js";
 import { Store } from "./store.js";
 import {
@@ -82,11 +83,7 @@ export interface Options {
   readonly name: string;
 }
 
-/** The LispM this device paired with, as the machine's `paired` effect gave it. */
-export interface Pairing {
-  readonly responder: string;
-  readonly key: string;
-}
+export type { Pairing } from "./pairing.js";
 
 /** A call an agent waits for approval of. */
 export interface Approval {
@@ -306,7 +303,7 @@ export class Remote {
       secret = generateStatic();
       await store.put("static", secret);
     }
-    const pairing = (await store.get<Pairing>("pairing")) ?? null;
+    let pairing = (await store.get<Pairing>("pairing")) ?? null;
     const config = ProcessorConfig.new(
       NETWORK_ID,
       options.ice,
@@ -317,7 +314,7 @@ export class Remote {
     // reloads must not start its message sequences over, or Rings refuses
     // it ("Transaction sequence 0 forks").
     const rings = "lispm-remote/rings";
-    await store.prepareReplay(rings);
+    await store.prepareRings(rings);
     const provider = (await Provider.new_provider_with_storage(config, rings)) as Provider;
     let remote: Remote | null = null;
     provider.on(
@@ -332,8 +329,18 @@ export class Remote {
     );
     const listener = provider.listen();
     await listener.started();
+    // A pairing made at another address opens no session; the device keeps
+    // its key, so pairing again replaces LispM's old record (pairing.ts).
+    const stale = pairing !== null && moved(pairing, provider.address);
+    if (stale) {
+      pairing = null;
+      await store.delete("pairing");
+    }
     const machine = new Initiator(secret, provider.address, pairing);
     remote = new Remote(store, provider, listener, machine, pairing, options, changed);
+    if (stale) {
+      remote.notice = { tone: "error", text: MOVED_NOTICE };
+    }
     remote.run();
     return remote;
   }
@@ -751,7 +758,7 @@ export class Remote {
           this.fingerprint = effect.fingerprint;
           break;
         case "paired":
-          this.pairing = { responder: effect.responder, key: effect.key };
+          this.pairing = { responder: effect.responder, key: effect.key, did: this.did };
           this.pairedAt = Date.now();
           void this.store.put("pairing", this.pairing);
           break;

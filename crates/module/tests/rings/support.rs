@@ -105,7 +105,7 @@ impl Peer {
         let id = self.node.request(method, &params.to_string()).unwrap();
         let reply = self.next(|event| match event {
             Event::Reply { id: got, result } if *got == id => Some(Ok(result.clone())),
-            Event::Failed { id: got, error } if *got == id => Some(Err(error.clone())),
+            Event::Failed { id: got, error, .. } if *got == id => Some(Err(error.clone())),
             _ => None,
         });
         reply.map(|result| serde_json::from_str(&result).unwrap())
@@ -127,7 +127,7 @@ impl Peer {
             let id = self.node.send(to, frame.clone()).unwrap();
             let failure = self.next(|event| match event {
                 Event::Sent { id: got } if *got == id => Some(None),
-                Event::Failed { id: got, error } if *got == id => Some(Some(error.clone())),
+                Event::Failed { id: got, error, .. } if *got == id => Some(Some(error.clone())),
                 _ => None,
             });
             let Some(error) = failure else { return };

@@ -39,6 +39,7 @@ use rings_core::delegation::DelegateeKey;
 use rings_core::delegation::DelegationBuilder;
 use rings_core::dht::Did;
 use rings_core::ecc::SecretKey;
+use rings_core::lifecycle::StopSource;
 use rings_core::message::ReplayStorage;
 use rings_core::storage::MemStorage;
 use rings_node::native::config::DEFAULT_NETWORK_ID;
@@ -94,6 +95,11 @@ pub enum Event {
         id: u64,
         /// Why, as Rings put it.
         error: String,
+        /// The data of the JSON-RPC error a request failed with, as JSON,
+        /// when Rings gave one: for a peer of another wire version,
+        /// `{"ours": n, "theirs": m}`, `m` null for a peer from before wire
+        /// versioning.
+        data: Option<String>,
     },
     /// Frames were dropped because Emacs did not collect events in time.
     Lost {
@@ -103,6 +109,24 @@ pub enum Event {
 }
 
 impl Event {
+    /// The failure of the work `id` with `error`.  A request's error comes
+    /// back from Rings's internal JSON-RPC handler, which keeps the data of
+    /// the error the call failed with; its text alone would lose it.
+    #[must_use]
+    pub fn failed(id: u64, error: &rings_node::error::Error) -> Self {
+        let data = match error {
+            rings_node::error::Error::InternalRpcError(failure) => {
+                failure.data.as_ref().map(ToString::to_string)
+            }
+            _ => None,
+        };
+        Self::Failed {
+            id,
+            error: error.to_string(),
+            data,
+        }
+    }
+
     /// Whether Emacs is waiting for this event in particular.
     const fn answers_emacs(&self) -> bool {
         matches!(
@@ -251,6 +275,8 @@ pub struct Node {
     /// `None` only while the node is being dropped.
     runtime: Option<Runtime>,
     provider: Arc<Provider>,
+    /// Stops the listener, before the node closes its network.
+    listening: StopSource,
     inbox: Arc<Inbox>,
     did: String,
     next: AtomicU64,
@@ -305,14 +331,17 @@ impl Node {
                 Ok::<_, rings_node::error::Error>(provider)
             })
             .map_err(|error| NodeError::Rings(error.to_string()))?;
-        let listening = Arc::clone(&provider);
-        // The listener ends only when the swarm does.
+        let listener = Arc::clone(&provider);
+        let listening = StopSource::new();
+        let stop = listening.token();
+        // The listener ends when the node stops it.
         runtime.spawn(async move {
-            let _ = listening.listen().await;
+            let _ = listener.listen_with(stop).await;
         });
         Ok(Self {
             runtime: Some(runtime),
             provider,
+            listening,
             inbox,
             did: account.did(),
             next: AtomicU64::new(1),
@@ -353,10 +382,7 @@ impl Node {
         self.spawn(async move {
             match provider.send(to, NAMESPACE, Bytes::from(payload)).await {
                 Ok(()) => Event::Sent { id },
-                Err(error) => Event::Failed {
-                    id,
-                    error: error.to_string(),
-                },
+                Err(error) => Event::failed(id, &error),
             }
         });
         Ok(id)
@@ -380,10 +406,7 @@ impl Node {
                     id,
                     result: result.to_string(),
                 },
-                Err(error) => Event::Failed {
-                    id,
-                    error: error.to_string(),
-                },
+                Err(error) => Event::failed(id, &error),
             }
         });
         Ok(id)
@@ -402,9 +425,21 @@ impl Node {
 }
 
 impl Drop for Node {
+    /// Stops the listener, closes every connection so that no socket stays
+    /// bound (RingsNetwork/rings#1098), then ends the runtime.  Its peers
+    /// see the connections close at once.
+    ///
+    /// ```text
+    ///   drop = close(inbox) ; stop(listener) ; close(provider) ≤ SHUTDOWN ; shutdown(runtime) ≤ SHUTDOWN
+    /// ```
     fn drop(&mut self) {
         self.inbox.close();
+        self.listening.request_stop();
         if let Some(runtime) = self.runtime.take() {
+            let provider = Arc::clone(&self.provider);
+            // A close that fails or hangs still ends in the shutdown below.
+            let _ = runtime
+                .block_on(async move { tokio::time::timeout(SHUTDOWN, provider.close()).await });
             runtime.shutdown_timeout(SHUTDOWN);
         }
     }
@@ -488,6 +523,36 @@ mod tests {
             node.unwrap().stop();
         }
         std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn a_failure_keeps_the_data_of_its_json_rpc_error() {
+        use rings_core::message::PeerWireVersion;
+        use rings_core::message::WireVersionMismatch;
+        use rings_node::error::Error;
+
+        // A request refused as the node's JSON-RPC handler refuses it.
+        let mismatch = Error::IncompatibleWireVersion(WireVersionMismatch {
+            ours: 1,
+            theirs: PeerWireVersion::BeforeVersioning,
+        });
+        let refusal = Error::InternalRpcError(mismatch.into());
+        assert_eq!(
+            Event::failed(3, &refusal),
+            Event::Failed {
+                id: 3,
+                error: "Internal rpc services error: Server error: Incompatible wire version: ours is 1, the peer's is from before wire versioning..".to_owned(),
+                data: Some(r#"{"ours":1,"theirs":null}"#.to_owned()),
+            }
+        );
+        assert_eq!(
+            Event::failed(4, &Error::ConnectionNotFound),
+            Event::Failed {
+                id: 4,
+                error: "Connection not found.".to_owned(),
+                data: None,
+            }
+        );
     }
 
     #[test]
