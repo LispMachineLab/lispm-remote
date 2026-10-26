@@ -45,6 +45,10 @@ export interface Situation {
   readonly peers: number;
   /** Joins that failed since the device last had a peer. */
   readonly joinAttempts: number;
+  /** When the page joins again, in milliseconds. */
+  readonly nextJoinAt: number;
+  /** Whether the seed answered but turned the page away. */
+  readonly refused: boolean;
   /** The seed's host. */
   readonly seed: string;
   /** The camera is looking for the code. */
@@ -106,8 +110,13 @@ function join(s: Situation): Step {
   if (s.seedProblem) {
     return step("join", "failed", s.seedProblem);
   }
+  const wait = s.nextJoinAt - s.now;
+  const again = wait > 1_500 ? ` · again in ${Math.ceil(wait / 1000)} s` : "";
+  if (s.refused) {
+    return step("join", "active", `${s.seed} turns this device away for now${again}`, "busy");
+  }
   const trying = s.joinAttempts > 0 ? `still trying, ${s.joinAttempts}` : "joining";
-  return step("join", "active", `Through ${s.seed}: ${trying}`, "busy");
+  return step("join", "active", `Through ${s.seed}: ${trying}${again}`, "busy");
 }
 
 function scan(s: Situation): Step {

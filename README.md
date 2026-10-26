@@ -253,6 +253,7 @@ make module        # the module, for this computer
 make test          # the Rust tests, then the Lisp tests on the built module
 make compile       # byte-compile the Lisp
 make page          # the page
+make test-page     # the page's tests, on what `make page` built
 make display-page  # the display's development page: the client in WebAssembly
 make e2e           # the browser test, on Linux, with sudo
 cargo check -p lispm-remote-protocol --target wasm32-unknown-unknown

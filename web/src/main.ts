@@ -157,6 +157,8 @@ function renderPair(current: Remote): void {
       online: navigator.onLine !== false,
       peers: current.peers,
       joinAttempts: current.joinAttempts,
+      nextJoinAt: current.nextJoinAt,
+      refused: current.joinRefusals > 0,
       seed: current.seed,
       scanning: scanning !== null,
       code: current.code,
