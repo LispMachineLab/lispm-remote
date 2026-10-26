@@ -1,15 +1,13 @@
-;;; lispm-remote-module-sums.eld --- The modules LispM Remote downloads  -*- lisp-data -*-
+;;; lispm-remote-module-sums.eld --- The modules lispm-remote-module downloads  -*- lisp-data -*-
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
-;; The SHA-256 of each module of the release module-VERSION, as
-;; published, compressed: the module lispm-remote-module.el downloads for
-;; these sources.  A module whose SHA-256 is not the one here is refused.
-;; VERSION must be the version of the module's sources.
-;; `lispm-remote-module-batch-pin' writes it once the module workflow has
-;; published that release.
+;; The SHA-256 of each module of the release module-VERSION, as published: what
+;; lispm-prebuilt downloads for these sources.  One whose SHA-256 is not
+;; the one here is refused.  `lispm-prebuilt-batch-pin' writes it once
+;; the workflow has published that release.
 
-(:version "1ae3b7c1a87edf9a"
- :modules (("aarch64-apple-darwin" . "dd44d136486fb80b4a7bba1dfe29ad5767df3bb8ff203c35734c32fdedc0b335")
-           ("aarch64-unknown-linux-gnu" . "f918154d2809890659e80ec6cd13e4964874f168c9d9b961ffe78467b5408048")
-           ("x86_64-apple-darwin" . "30c32d040f9ce34cc7ab56d0e5aa498ffb91ddc4f0005801cd0b592e6f0f8bfe")
-           ("x86_64-unknown-linux-gnu" . "8b306377098b9e62ae3e7363b8f6c0a7ccf453beba9d0e72bff970cab351e283")))
+(:version "03c7b4605818b06d"
+ :modules (("aarch64-apple-darwin" . "d62b715a025ec057c4e63691889f27aa178af8ab342ed8336b9ba1e517e022bb")
+           ("aarch64-unknown-linux-gnu" . "ecf1f15a09b0a075db63855cc05fcd244d5173b19793b5e81157185a3002b298")
+           ("x86_64-apple-darwin" . "30d6d493c1c20e74f89b2d1a31b4a3527d4a46ff99a0ce6564d2b08fceb56968")
+           ("x86_64-unknown-linux-gnu" . "f0705dc87a161e251626341497a00274731cb7c5df4c5504873c908b9279e55d")))

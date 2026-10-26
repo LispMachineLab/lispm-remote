@@ -8,17 +8,30 @@
  * its Rings account ("account", a WebCrypto key pair whose private half
  * cannot be read out), its static secret ("static", hexadecimal) and its
  * pairing ("pairing", the `{responder, key}` of the machine's `paired`
- * effect).  The Rings node keeps its replay records beside them, under
- * "lispm-remote/rings", in the format "replayFormat" names.
+ * effect, and the page's own address then).  The Rings node keeps its
+ * stores beside them, under "lispm-remote/rings", written by the Rings
+ * "replayFormat" names.
  */
 
 const DATABASE = "lispm-remote";
 const STORE = "keys";
 
-/** The replay record format this page's Rings writes.  Rings 0.35 changed
- * it (RingsNetwork/rings#936): a store of an earlier format decodes no
- * record, so every stream would fail closed. */
-const REPLAY_FORMAT = "rings-0.35";
+/** The Rings whose stores this page writes.  A store an earlier Rings
+ * wrote may not decode: Rings 0.35 changed the replay record format
+ * (RingsNetwork/rings#936), and Rings 0.37 asks every store to be removed
+ * (RingsNetwork/rings#1072). */
+const REPLAY_FORMAT = "rings-0.37";
+
+/** The databases Rings's browser node keeps under its storage name. */
+const RINGS_DATABASES = [
+  "",
+  "/relay-inbox",
+  "/dht-removals",
+  "/transaction-replay",
+  "/onion-entry-guards",
+  "/measure",
+  "/provisional-evidence",
+];
 
 /** What the store holds. */
 export type Key = "account" | "static" | "pairing" | "replayFormat";
@@ -73,14 +86,16 @@ export class Store {
     await committed(transaction);
   }
 
-  /** Removes the replay store of the Rings node kept under `rings` when it
-   * was written in another format than `REPLAY_FORMAT`, before the node
-   * opens it.  Rings resets each stream's replay window then, as clearing
-   * a stream does.  It is removed before the format is noted, so a page
-   * closed in between removes it again. */
-  async prepareReplay(rings: string): Promise<void> {
+  /** Removes the stores of the Rings node kept under `rings` when another
+   * Rings than `REPLAY_FORMAT` wrote them, before the node opens them.
+   * Rings resets each stream's replay window then, as clearing a stream
+   * does.  They are removed before the format is noted, so a page closed in
+   * between removes them again. */
+  async prepareRings(rings: string): Promise<void> {
     if ((await this.get<string>("replayFormat")) === REPLAY_FORMAT) return;
-    await result(indexedDB.deleteDatabase(`${rings}/transaction-replay`));
+    for (const suffix of RINGS_DATABASES) {
+      await result(indexedDB.deleteDatabase(`${rings}${suffix}`));
+    }
     await this.put("replayFormat", REPLAY_FORMAT);
   }
 }

@@ -82,15 +82,22 @@ What happens when the network drops:
 When the other end runs another version, LispM Remote says so after the first failure, in Emacs's
 window and in the page's steps, and stops trying:
 
-- **The seed.** Rings's handshake carries no version, and a seed tells its version only to its operator.
-  A seed of another Rings version fails to read the node's offer ("Answer offer info failed: Codec
-  deserialization error"), or the node fails to read its answer ("Decode error"). LispM Remote takes
-  those words for a version mismatch and says, for example, "node.rings.rs runs another Rings version
-  than this LispM Remote (0.36.0). Update LispM Remote, or join through a seed of Rings 0.36.0." It
-  names its own Rings from the node's `nodeInfo`. Which side is older it cannot say until Rings's
-  handshake carries the version. It then leaves that seed alone for half an hour
-  (`lispm-remote-mismatch-seconds`), so a seed that refuses addresses that keep asking (429) does not
-  refuse this one. Turning LispM Remote off and on in Emacs, or reloading the page, tries at once.
+- **The seed.** Since Rings 0.37 the handshake carries a wire version
+  ([RingsNetwork/rings#1104](https://github.com/RingsNetwork/rings/issues/1104)). The node reads the
+  seed's from its `nodeDid` before it offers, and refuses a seed of another wire version with JSON-RPC
+  error 210: "Incompatible wire version: ours is 1, the peer's is 2", with the data `{"ours": 1,
+  "theirs": 2}`, `theirs` null for a seed from before wire versioning (0.36 and older). Emacs reads the
+  data, which its module passes on; the page's browser node passes on only the words, which name the
+  same two versions. So LispM Remote says which side is older: "node.rings.rs runs a newer Rings than
+  this LispM Remote (0.37.0). Update LispM Remote." (the page: reload it), or "node.rings.rs runs an
+  older Rings than this LispM Remote (0.37.0). Join through another seed."
+- **A seed that cannot read the offer.** A seed of the same wire version that fails to read the node's
+  offer ("Answer offer info failed: Codec deserialization error"), or whose answer the node cannot read
+  ("Decode error"), runs another Rings too; LispM Remote says so, naming its own Rings from the node's
+  `nodeInfo`. LispM Remote 0.2, on Rings 0.36, takes a newer seed's relayed refusal the same way. Either
+  way it then leaves that seed alone for half an hour (`lispm-remote-mismatch-seconds`), so a seed that
+  refuses addresses that keep asking (429) does not refuse this one. Turning LispM Remote off and on in
+  Emacs, or reloading the page, tries at once.
 - **LispM and the page.** Every frame starts with the version of LispM Remote's protocol it is in, and
   every version keeps the frame's header (version, kind, channel). An end that gets a frame of another
   version answers on its channel in its own version, so the other end learns which it speaks. Emacs

@@ -10,7 +10,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@ringsnetwork/rings-node": "git+https://github.com/RingsNetwork/rings.git#v0.36.0"
+    "@ringsnetwork/rings-node": "git+https://github.com/RingsNetwork/rings.git#v0.37.0"
   },
   "devDependencies": {
     "typescript": "5.9.3"

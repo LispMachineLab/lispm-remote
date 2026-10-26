@@ -337,6 +337,62 @@ fn pairing_again_replaces_the_record_and_closes_the_old_channels() {
 }
 
 #[test]
+fn pairing_again_from_a_new_address_replaces_the_record_of_the_same_key() {
+    let mut lispm = Lispm::new(Vec::new());
+    let mut phone = Phone::new("did:rings:phone", 7, None);
+    let (old, channel) = pair(&mut lispm, &mut phone);
+
+    // The same key at a new address, as after Rings 0.37 gave the page's
+    // account a new DID.
+    let mut moved = Phone::new("did:rings:moved", 7, None);
+    let token = lispm.offer();
+    let (init, fingerprint) = moved.pair(&token);
+    lispm.receive(&moved.peer, init);
+    let effects = lispm.step(Input::Approve { fingerprint }).unwrap();
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        crate::lispm::Effect::Closed { peer: p, channel: c, why: CloseReason::Repaired }
+            if *p == phone.peer && *c == channel
+    )));
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, crate::lispm::Effect::Forgotten(p) if *p == phone.peer))
+    );
+    let record = single(paired(&effects));
+    assert_eq!(record.key(), old.key());
+    assert_eq!(lispm.state().devices().collect::<Vec<_>>(), vec![&record]);
+}
+
+#[test]
+fn a_device_at_a_new_address_pairs_again_when_the_devices_are_full() {
+    let records = (0..MAX_DEVICES)
+        .map(|i| {
+            let secret = u8::try_from(i).unwrap() + 100;
+            Device::new(
+                peer(&format!("did:rings:old{i}")),
+                *identity("did:rings:old", secret).public_key(),
+                name("Old"),
+                START,
+            )
+        })
+        .collect();
+    let mut lispm = Lispm::new(records);
+
+    let token = lispm.offer();
+    let mut moved = Phone::new("did:rings:moved", 103, None);
+    let (init, fingerprint) = moved.pair(&token);
+    lispm.receive(&moved.peer, init);
+    let effects = lispm.step(Input::Approve { fingerprint }).unwrap();
+    assert!(
+        effects.iter().any(
+            |e| matches!(e, crate::lispm::Effect::Forgotten(p) if *p == peer("did:rings:old3"))
+        )
+    );
+    assert_eq!(lispm.state().devices().count(), MAX_DEVICES);
+}
+
+#[test]
 fn the_device_cap_holds_for_new_addresses_only() {
     let records = (0..MAX_DEVICES)
         .map(|i| {
