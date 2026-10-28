@@ -78,6 +78,12 @@ What happens when the network drops:
   `~/.emacs.d/lispm-remote/rings/`, and the page keeps them in IndexedDB.
 - **Coming back.** A node that comes back while its old connection still looks alive is refused until
   that connection times out, about five seconds. The device keeps offering until then.
+- **A month on.** A node runs on a session key its account delegates to for 30 days, and Rings sends
+  nothing signed with it from 25 seconds before it expires
+  ([RingsNetwork/rings#1063](https://github.com/RingsNetwork/rings/issues/1063)). A day before, Emacs's
+  node closes its Rings processor and starts another on a fresh key, under the same DID and over the same
+  replay records, and joins the network again; the sessions stay. The page reloads instead, once nobody
+  is looking at it, or a minute before its key would leave it mute.
 
 When the other end runs another version, LispM Remote says so after the first failure, in Emacs's
 window and in the page's steps, and stops trying:

@@ -31,6 +31,9 @@
  *   and stops trying (version.ts): it leaves a seed of another Rings
  *   version alone for 30 minutes, and opens no session with LispM of
  *   another protocol version until it reloads or pairs again.
+ * - A day before its node's session key would leave it mute, the page
+ *   reloads, for a fresh key: as soon as nobody looks at it, or a minute
+ *   before (renewal.ts).
  *
  * Commands to LispM carry an `id` and are sent again every 2 s until LispM
  * answers with an `ack` or `error` of that id; LispM answers a repeated id
@@ -48,6 +51,7 @@ import { account, delegatee } from "./account.js";
 import { type Held, holding, stuck } from "./handshake.js";
 import { type JoinFailure, joinDelay, rateLimited, unseen } from "./join.js";
 import { MOVED_NOTICE, moved, type Pairing } from "./pairing.js";
+import { RENEWAL_NOTICE, type Renewal, renewing } from "./renewal.js";
 import { expiry } from "./steps.js";
 import { Store } from "./store.js";
 import {
@@ -289,6 +293,7 @@ export class Remote {
   private watching = false;
   private token: string | null = null;
   private readonly commands = new Map<string, Command>();
+  private warnedOfRenewal = false;
   private readonly displayListeners: ((payload: Uint8Array) => void)[] = [];
   private readonly channelListeners: ((open: boolean) => void)[] = [];
 
@@ -299,6 +304,7 @@ export class Remote {
     private readonly machine: Initiator,
     public pairing: Pairing | null,
     private readonly options: Options,
+    private readonly renewal: Renewal,
     private readonly changed: () => void,
   ) {}
 
@@ -313,12 +319,8 @@ export class Remote {
       await store.put("static", secret);
     }
     let pairing = (await store.get<Pairing>("pairing")) ?? null;
-    const config = ProcessorConfig.new(
-      NETWORK_ID,
-      options.ice,
-      await delegatee(await account(store)),
-      STABILIZE_SECONDS,
-    );
+    const { key, renewal } = await delegatee(await account(store));
+    const config = ProcessorConfig.new(NETWORK_ID, options.ice, key, STABILIZE_SECONDS);
     // The replay records go to IndexedDB under this name: a device that
     // reloads must not start its message sequences over, or Rings refuses
     // it ("Transaction sequence 0 forks").
@@ -346,7 +348,7 @@ export class Remote {
       await store.delete("pairing");
     }
     const machine = new Initiator(secret, provider.address, pairing);
-    remote = new Remote(store, provider, listener, machine, pairing, options, changed);
+    remote = new Remote(store, provider, listener, machine, pairing, options, renewal, changed);
     if (stale) {
       remote.notice = { tone: "error", text: MOVED_NOTICE };
     }
@@ -387,7 +389,10 @@ export class Remote {
       void this.watch();
     });
     // A phone that wakes the page wants it back on the network at once.
+    // A page shown again, or hidden, has nobody looking at it yet, so it
+    // may reload to renew its key.
     document.addEventListener("visibilitychange", () => {
+      this.renew(false);
       if (document.visibilityState === "visible" && this.peers === 0) {
         this.joinNow();
         void this.watch();
@@ -574,7 +579,28 @@ export class Remote {
   // --------------------------------------------------------------------
   // Loops
 
+  /** Reloads the page, for a fresh session key, when its key nears its
+   * horizon and nobody looks, or `looking` may, at the last moment; warns
+   * once meanwhile (renewal.ts). */
+  private renew(looking: boolean): void {
+    switch (renewing(this.renewal, Date.now(), looking)) {
+      case "reload":
+        location.reload();
+        break;
+      case "warn":
+        if (!this.warnedOfRenewal) {
+          this.warnedOfRenewal = true;
+          this.notice = { tone: "info", text: RENEWAL_NOTICE };
+          this.changed();
+        }
+        break;
+      case "run":
+        break;
+    }
+  }
+
   private tick(): void {
+    this.renew(document.visibilityState === "visible");
     this.apply(this.machine.tick());
     if (this.phase !== "open") {
       return;

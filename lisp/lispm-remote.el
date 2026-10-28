@@ -30,7 +30,8 @@
 ;; computer while it runs.
 ;; `lispm-remote-mode' starts a Rings Network node, joins the network
 ;; through `lispm-remote-seeds' and rejoins it whenever it loses every
-;; peer.  Paired devices then reach LispM by its DID, from anywhere.
+;; peer, as after the node renewed its session key, once a month.  Paired
+;; devices then reach LispM by its DID, from anywhere.
 ;;
 ;; When the other end runs another version, LispM Remote says so at once,
 ;; in its window (`M-x lispm-remote') and in the echo area, and does not
@@ -350,11 +351,13 @@ nil when there is none."
    (lambda (result _error)
      (setq lispm-remote--rings (lispm-remote--version-number (alist-get 'version result)))))
   (setq lispm-remote--timer (run-at-time 0 lispm-remote-check-seconds #'lispm-remote--check))
+  (add-hook 'lispm-remote-node-renewed-functions #'lispm-remote--renewed)
   (dolist (hook lispm-remote--change-hooks)
     (add-hook hook #'lispm-remote-state-changed)))
 
 (defun lispm-remote--stop ()
   "Stop the node and forget the sessions."
+  (remove-hook 'lispm-remote-node-renewed-functions #'lispm-remote--renewed)
   (dolist (hook lispm-remote--change-hooks)
     (remove-hook hook #'lispm-remote-state-changed))
   (dolist (timer (list lispm-remote--timer lispm-remote--state-timer))
@@ -373,6 +376,14 @@ when the node has lost every peer."
     (lispm-remote--apply (lispm-remote-core-responder-tick lispm-remote--machine))
     (lispm-remote--send-state)
     (lispm-remote--send-chats)
+    (lispm-remote--check-peers t)))
+
+(defun lispm-remote--renewed (node)
+  "Join the network again at once, when NODE is the mode's own and just
+renewed its session key.  The sessions stay: a device's frames reach the
+node again once it is back on the network."
+  (when (eq node lispm-remote--node)
+    (lispm-remote--log "the node renewed its session key; joining again")
     (lispm-remote--check-peers t)))
 
 (defun lispm-remote--check-peers (&optional rejoin)

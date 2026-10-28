@@ -15,7 +15,8 @@
 //! the frames and carries out what they return.
 //!
 //! Rings's account is a secp256k1 key the shell stores; the node runs on a
-//! fresh session key that account delegates to at each start.
+//! fresh session key that account delegates to at each start, and renews
+//! it before its delegation would leave the node mute.
 //!
 //! The module also holds the display (`display`): LispM's windows drawn
 //! on tty frames whose terminals it keeps, and redrawn by clients
@@ -32,6 +33,7 @@ mod store;
 
 pub use node::Account;
 pub use node::Event;
+pub use node::Lifetime;
 pub use node::MAX_QUEUED;
 pub use node::NAMESPACE;
 pub use node::Node;

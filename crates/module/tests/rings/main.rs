@@ -7,7 +7,8 @@
 //! computer: frames between two of them (`two_nodes`); LispM Remote's
 //! pairing and sessions carried by the network, relayed by a third node
 //! (`remote`); the same over the public network, when asked (`public`);
-//! and what a node of another Rings version says (`versions`).
+//! a node that renews its delegation and talks on (`renewal`); and what a
+//! node of another Rings version says (`versions`).
 //!
 //! The modules are `cfg(test)` items, so clippy's test allowances reach
 //! their helpers.
@@ -16,6 +17,8 @@
 mod public;
 #[cfg(test)]
 mod remote;
+#[cfg(test)]
+mod renewal;
 #[cfg(test)]
 mod support;
 #[cfg(test)]

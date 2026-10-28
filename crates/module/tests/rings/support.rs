@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use lispm_remote_module::Account;
 use lispm_remote_module::Event;
+use lispm_remote_module::Lifetime;
 use lispm_remote_module::Node;
 use lispm_remote_module::Wake;
 
@@ -53,8 +54,14 @@ impl Peer {
 
     /// A node for `account`, its replay records kept in `store`.
     pub fn start_as(account: &Account, store: Option<&Path>) -> Self {
+        Self::start_lasting(account, store, Lifetime::DEFAULT)
+    }
+
+    /// A node for `account`, its replay records kept in `store`, on
+    /// delegations of `lifetime`.
+    pub fn start_lasting(account: &Account, store: Option<&Path>, lifetime: Lifetime) -> Self {
         let bell = Shared::default();
-        let node = Node::start(account, ICE, store, bell.clone()).unwrap();
+        let node = Node::start_lasting(account, ICE, store, lifetime, bell.clone()).unwrap();
         Self {
             node,
             bell,
@@ -150,12 +157,37 @@ impl Peer {
 }
 
 /// Connects `a` to `b` directly, passing the offer and answer by hand.
+/// `b` refuses `a`'s offers while it still holds a connection to an
+/// earlier node of `a`'s account, as after `a` renewed, and `a` refuses to
+/// offer while a refused offer of its own is pending; `a` offers again
+/// until both let go.
 pub fn connect(a: &mut Peer, b: &mut Peer) {
-    let offer = a.ask("createOffer", serde_json::json!({ "did": b.did() }));
-    let answer = b.ask(
-        "answerOffer",
-        serde_json::json!({ "offer": offer["offer"] }),
-    );
+    let deadline = Instant::now() + PATIENCE;
+    let mut first = None;
+    let answer = loop {
+        let answer = a
+            .request("createOffer", serde_json::json!({ "did": b.did() }))
+            .and_then(|offer| {
+                b.request(
+                    "answerOffer",
+                    serde_json::json!({ "offer": offer["offer"] }),
+                )
+            });
+        match answer {
+            Ok(answer) => break answer,
+            Err(error) => {
+                // A refused offer makes the next ones fail on it; the first
+                // failure says why.
+                let first = first.get_or_insert_with(|| error.clone());
+                assert!(
+                    Instant::now() < deadline,
+                    "connecting failed: {first}; at last: {error}"
+                );
+            }
+        }
+        // The refusal has no event to wait for its end; offer again shortly.
+        std::thread::sleep(Duration::from_millis(500));
+    };
     a.ask(
         "acceptAnswer",
         serde_json::json!({ "answer": answer["answer"] }),
