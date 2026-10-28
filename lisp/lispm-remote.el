@@ -253,9 +253,10 @@ a list of (PEER VERSION OURS), newest first.")
 (defvar lispm-remote--view 'home
   "What LispM Remote's window shows: `home' or `pair'.")
 
-(defconst lispm-remote--rings "0.37"
-  "The Rings at whose addresses devices pair now.
-A device record notes it as :rings; see `lispm-remote--device-current-p'.")
+(defconst lispm-remote--addresses-since "0.37"
+  "The Rings that last gave devices new addresses.
+A device record notes the Rings it paired under as :rings; see
+`lispm-remote--device-current-p'.")
 
 (defconst lispm-remote--log-buffer " *lispm-remote log*"
   "The buffer LispM Remote notes what it discarded and what failed in.")
@@ -599,7 +600,7 @@ version, if any: seeds while it is off the network, and devices."
       (`(paired ,peer ,key ,name ,paired-at)
        (lispm-remote--save-devices
         (cons (list :peer peer :key key :name name :paired-at paired-at
-                    :rings lispm-remote--rings)
+                    :rings (or lispm-remote--rings lispm-remote--addresses-since))
               (seq-remove (lambda (device) (equal (plist-get device :peer) peer))
                           (lispm-remote--devices))))
        (setq lispm-remote--offer (plist-put (plist-put lispm-remote--offer :paired name)
@@ -1512,15 +1513,17 @@ windows from their page."
 
 (defconst lispm-remote--moved-device-text
   "Paired before Rings 0.37, which gave it a new address. Pair it again with M-x lispm-remote-pair; the new pairing replaces this one."
-  "What a device paired before `lispm-remote--rings' shows.")
+  "What a device paired before `lispm-remote--addresses-since' shows.")
 
 (defun lispm-remote--device-current-p (device)
   "Return non-nil when DEVICE paired at its present Rings address.
 Rings 0.37 gave every browser a new address (RingsNetwork/rings#1072),
 and LispM binds the address a device paired at into each session, so a
 device paired before cannot open one until it pairs again.  Its device
-key stays, so the new pairing replaces the old record."
-  (equal (plist-get device :rings) lispm-remote--rings))
+key stays, so the new pairing replaces the old record.  A device paired
+under any later Rings keeps its address, whichever Rings runs now."
+  (let ((rings (plist-get device :rings)))
+    (and (stringp rings) (version<= lispm-remote--addresses-since rings))))
 
 (defun lispm-remote--insert-device (device)
   "Insert a line for the paired DEVICE, with a button forgetting it."

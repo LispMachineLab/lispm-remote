@@ -713,6 +713,7 @@ tester, bound as BINDINGS says: (PHONE)."
 (ert-deftest lispm-remote-test-a-device-paired-before-rings-0.37-is-told-to-pair-again ()
   (let ((lispm-remote-directory (make-temp-file "lispm-remote-test" t))
         (lispm-remote--view 'home)
+        (lispm-remote--rings "0.37.0")
         (old '(:peer "0x1f0f8a4b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f" :key "k" :name "Old Phone"
                      :paired-at 1792700000000)))
     (unwind-protect
@@ -728,7 +729,7 @@ tester, bound as BINDINGS says: (PHONE)."
              (forgotten ,(plist-get old :peer))))
           (let ((devices (lispm-remote--devices)))
             (should (= (length devices) 1))
-            (should (equal (plist-get (car devices) :rings) lispm-remote--rings)))
+            (should (equal (plist-get (car devices) :rings) "0.37.0")))
           (setq lispm-remote--view 'home)
           (with-current-buffer (lispm-remote--render)
             (should (string-search "Old Phone" (buffer-string)))
@@ -737,6 +738,18 @@ tester, bound as BINDINGS says: (PHONE)."
         (kill-buffer lispm-remote--buffer))
       (setq lispm-remote--offer nil)
       (delete-directory lispm-remote-directory t))))
+
+(ert-deftest lispm-remote-test-a-device-paired-under-rings-0.37-keeps-its-pairing ()
+  ;; A device notes the Rings it paired under: the node's, or the Rings that
+  ;; last moved addresses when the node had not said yet.  Neither is told to
+  ;; pair again under a later Rings, nor while LispM Remote is off.
+  (let ((noted (list '(:rings "0.37") '(:rings "0.37.0") '(:rings "0.38.0"))))
+    (dolist (running '(nil "0.37.0" "0.38.0" "0.39.1"))
+      (let ((lispm-remote--rings running))
+        (dolist (device noted)
+          (should (lispm-remote--device-current-p device)))
+        (should-not (lispm-remote--device-current-p '(:peer "0x1f")))
+        (should-not (lispm-remote--device-current-p '(:rings "0.36.0")))))))
 
 (ert-deftest lispm-remote-test-home-follows-pairing-and-sessions ()
   (skip-unless (lispm-remote-node-test--module-p))

@@ -425,18 +425,24 @@ impl Node {
 }
 
 impl Drop for Node {
-    /// Stops the listener, closes every connection so that no socket stays
-    /// bound (RingsNetwork/rings#1098), then ends the runtime.  Its peers
-    /// see the connections close at once.
+    /// Stops the listener, closes the node so that its tasks end and no
+    /// socket stays bound (RingsNetwork/rings#1098, #1085), then ends the
+    /// runtime.  Its peers see the connections close at once.
     ///
     /// ```text
-    ///   drop = close(inbox) ; stop(listener) ; close(provider) ≤ SHUTDOWN ; shutdown(runtime) ≤ SHUTDOWN
+    ///   drop = close(inbox) ; stop(listener) ; close(provider') ≤ SHUTDOWN ; shutdown(runtime) ≤ SHUTDOWN
     /// ```
+    ///
+    /// `close` takes a provider, so a clone `provider'` of the node's goes:
+    /// it stops the node and closes its network, and reports the node still
+    /// shared, by this one and the runtime's tasks.  The shutdown drops the
+    /// tasks' clones and this field drops last, so the node's stores are
+    /// released when the drop returns, for a node started again on them.
     fn drop(&mut self) {
         self.inbox.close();
         self.listening.request_stop();
         if let Some(runtime) = self.runtime.take() {
-            let provider = Arc::clone(&self.provider);
+            let provider = Provider::clone(&self.provider);
             // A close that fails or hangs still ends in the shutdown below.
             let _ = runtime
                 .block_on(async move { tokio::time::timeout(SHUTDOWN, provider.close()).await });
