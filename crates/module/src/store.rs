@@ -8,11 +8,12 @@
 //! Rings refuses a sender whose message sequences go back, so a node that
 //! restarts must find its records again.  A store written by an earlier
 //! Rings may not decode: Rings 0.35 changed the record format
-//! (RingsNetwork/rings#936), and Rings 0.37 asks every store to be removed
-//! (RingsNetwork/rings#1072).  The store's directory names the Rings whose
-//! records it holds in [`FORMAT_FILE`]; a store of another is removed
-//! before it opens, which resets each stream's replay window, as clearing a
-//! stream does.
+//! (RingsNetwork/rings#936), Rings 0.37 asks every store to be removed
+//! (RingsNetwork/rings#1072), and Rings 0.38 changes the record format
+//! again (RingsNetwork/rings#1059).  The store's directory names the
+//! Rings whose records it holds in [`FORMAT_FILE`]; a store of another is
+//! removed before it opens, which resets each stream's replay window, as
+//! clearing a stream does.
 //!
 //! ```text
 //!   open(d) = (format(d) ≠ FORMAT ⇒ remove(replay(d)) ; format(d) ← FORMAT) ;
@@ -34,7 +35,7 @@ use crate::node::NodeError;
 /// replay store holds.
 const FORMAT_FILE: &str = "transaction-replay.format";
 /// The Rings whose records this build writes.
-const FORMAT: &str = "rings-0.37";
+const FORMAT: &str = "rings-0.38";
 
 /// The replay store of the node whose store is `store`, opened at Rings's
 /// authority for it, as its own daemon opens it: a record it could not
