@@ -181,6 +181,23 @@ data, parsed, as its text property."
     (should (equal outcome '(nil "Connection not found.")))
     (should-not (get-text-property 0 'lispm-remote-node-data (cadr outcome)))))
 
+(ert-deftest lispm-remote-node-test-a-renewal-is-told ()
+  "A node that renewed its session key runs the renewal hook with itself;
+one whose renewal failed says so."
+  (let* ((node (lispm-remote-node--create))
+         (renewed nil)
+         (lispm-remote-node-renewed-functions
+          (list (lambda (renewing) (push renewing renewed)))))
+    (lispm-remote-node--dispatch node '(renewed))
+    (should (equal renewed (list node)))
+    (let ((warnings nil))
+      (cl-letf (((symbol-function 'display-warning)
+                 (lambda (type message &rest _) (push (list type message) warnings))))
+        (lispm-remote-node--dispatch node '(renewal-failed "the store is locked")))
+      (should (equal (caar warnings) 'lispm-remote))
+      (should (string-search "the store is locked" (cadar warnings))))
+    (should (equal renewed (list node)))))
+
 (ert-deftest lispm-remote-node-test-without-a-pin-download-explains ()
   (let* ((directory (make-temp-file "lispm-remote-pins" t))
          (lispm-remote-module-source 'download)

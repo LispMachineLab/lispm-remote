@@ -1148,6 +1148,32 @@ step, and LispM Remote stops joining through that seed for a while."
           (should (string-search "✖ seed.example runs another Rings version than this LispM Remote (0.36.0)." home)))
         (should (eq (alist-get 'join (lispm-remote--progress '(:token "t"))) 'active))))))
 
+(ert-deftest lispm-remote-test-a-renewed-node-joins-again-at-once ()
+  "The node starts again connected to no one once it renewed its session
+key, so LispM Remote joins the network at once, and keeps its sessions."
+  (lispm-remote-test--with-home
+    (let ((lispm-remote-seeds '("https://seed.example"))
+          (lispm-remote--peers 3)
+          (lispm-remote--sessions (list (lispm-remote--session-create :peer "0xphone"
+                                                                      :channel "c")))
+          (lispm-remote-node-renewed-functions nil)
+          (joined nil))
+      (cl-letf (((symbol-function 'lispm-remote-node-request)
+                 (lambda (_node method _params callback)
+                   (should (equal method "listPeers"))
+                   (funcall callback '((peers)) nil)))
+                ((symbol-function 'lispm-remote-node-connect)
+                 (lambda (node seed _callback) (push (cons node seed) joined))))
+        (add-hook 'lispm-remote-node-renewed-functions #'lispm-remote--renewed)
+        ;; Another node's renewal is not the mode's.
+        (lispm-remote-node--dispatch (lispm-remote-node--create :did "0xother") '(renewed))
+        (should-not joined)
+        (lispm-remote-node--dispatch lispm-remote--node '(renewed))
+        (should (equal joined (list (cons lispm-remote--node "https://seed.example"))))
+        (should (eql lispm-remote--peers 0))
+        (should (equal (mapcar #'lispm-remote--session-peer lispm-remote--sessions)
+                       '("0xphone")))))))
+
 (ert-deftest lispm-remote-test-a-seed-conclusion-names-this-rings ()
   (let ((lispm-remote--rings "0.36.0")
         (lispm-remote--mismatches nil))

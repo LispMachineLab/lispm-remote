@@ -15,6 +15,9 @@
 //!   (failed ID MESSAGE DATA) a send or request failed; DATA the JSON of
 //!                           its JSON-RPC error's data, or nil
 //!   (lost COUNT)            frames dropped while Emacs did not collect
+//!   (renewed)               the node renewed its delegation, and joins
+//!                           the network again
+//!   (renewal-failed MESSAGE) renewing it failed; it tries again
 //! ```
 //!
 //! Conversion between Lisp and Rust happens here and nowhere else; errors
@@ -143,6 +146,8 @@ fn event_value(env: &Env, event: Event) -> Result<Value<'_>> {
             env.list((env.intern("failed")?, i64::try_from(id)?, error, data))
         }
         Event::Lost { frames } => env.list((env.intern("lost")?, i64::try_from(frames)?)),
+        Event::Renewed => env.list((env.intern("renewed")?,)),
+        Event::RenewalFailed { error } => env.list((env.intern("renewal-failed")?, error)),
     }
 }
 

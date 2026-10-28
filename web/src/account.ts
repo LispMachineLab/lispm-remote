@@ -8,11 +8,13 @@
  * private half not extractable, so it never leaves the browser.  Rings
  * derives the device's DID from the public half (account type
  * `secp256r1`), and the node runs on a session key this account delegates
- * to at each start, as LispM's node does with its own account.  The device
- * never borrows LispM's account: a node's DID is its account's.
+ * to at each start, as LispM's node does with its own account; the page
+ * reloads before that delegation runs out (renewal.ts).  The device never
+ * borrows LispM's account: a node's DID is its account's.
  */
 
 import { type DelegateeKey, DelegationBuilder } from "rings-node";
+import { DELEGATION_TTL_MS, type Renewal, renewalOf } from "./renewal.js";
 import type { Store } from "./store.js";
 
 const P256: EcKeyGenParams = { name: "ECDSA", namedCurve: "P-256" };
@@ -71,14 +73,22 @@ export function lowS(signature: Uint8Array): Uint8Array {
   return low;
 }
 
+/** A session key for the node to run on, and when to renew it. */
+export interface Delegatee {
+  readonly key: DelegateeKey;
+  readonly renewal: Renewal;
+}
+
 /** A fresh session key that `account` delegates to, for the node to run on. */
-export async function delegatee(account: Account): Promise<DelegateeKey> {
-  let builder = DelegationBuilder.new(account.entity, "secp256r1");
+export async function delegatee(account: Account): Promise<Delegatee> {
+  // Rings stamps the delegation as the builder is made, just after.
+  const renewal = renewalOf(Date.now());
+  let builder = DelegationBuilder.new(account.entity, "secp256r1").set_ttl(BigInt(DELEGATION_TTL_MS));
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     account.keys.privateKey,
     prefixed(builder.unsigned_proof()),
   );
   builder = builder.set_delegator_signature(lowS(new Uint8Array(signature)));
-  return builder.build();
+  return { key: builder.build(), renewal };
 }

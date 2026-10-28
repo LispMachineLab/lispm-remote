@@ -38,6 +38,13 @@
 ;; and the node's own frame function.  Rings authenticated their sender;
 ;; what they say is for LispM Remote's protocol to judge.
 ;;
+;; The node runs on a session key its account delegates to for 30 days,
+;; and could send nothing from a little before the end.  A day before, it
+;; renews the key by itself: its DID, its replay records and the frames it
+;; hands over stay the same, but it starts again connected to no one, and
+;; runs `lispm-remote-node-renewed-functions' to be joined to the network
+;; again.
+;;
 ;; The node's identity is a Rings account key, made the first time and
 ;; kept, readable only by you, in `lispm-remote-directory'.
 
@@ -71,6 +78,11 @@ reads them."
   "Abnormal hook run with NODE, FROM and FRAME for each frame a peer sends.
 FROM is the sender's DID, as Rings authenticated it; FRAME a unibyte
 string.")
+
+(defvar lispm-remote-node-renewed-functions nil
+  "Abnormal hook run with NODE each time NODE renewed its session key.
+NODE then runs on a new Rings processor, under the same DID, connected to
+no one: join it to the network again, with `lispm-remote-node-connect'.")
 
 (cl-defstruct (lispm-remote-node (:constructor lispm-remote-node--create)
                                  (:copier nil))
@@ -249,7 +261,13 @@ error's data or nil, parsed, as its text property `lispm-remote-node-data'."
      (lispm-remote-node--finish node id nil (lispm-remote-node--failure message data)))
     (`(lost ,count)
      (display-warning 'lispm-remote
-                      (format "%d frames were lost while Emacs was busy" count)))))
+                      (format "%d frames were lost while Emacs was busy" count)))
+    ('(renewed)
+     (run-hook-with-args 'lispm-remote-node-renewed-functions node))
+    (`(renewal-failed ,message)
+     (display-warning 'lispm-remote
+                      (format "renewing the node's session key failed, to be tried again in a minute: %s"
+                              message)))))
 
 (provide 'lispm-remote-node)
 ;;; lispm-remote-node.el ends here
