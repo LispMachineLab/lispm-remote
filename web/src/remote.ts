@@ -52,6 +52,7 @@ import { type Held, holding, stuck } from "./handshake.js";
 import { type JoinFailure, joinDelay, rateLimited, unseen } from "./join.js";
 import { MOVED_NOTICE, moved, type Pairing } from "./pairing.js";
 import { RENEWAL_NOTICE, type Renewal, renewing } from "./renewal.js";
+import { clearToken, keepToken } from "./scan.js";
 import { expiry } from "./steps.js";
 import { Store } from "./store.js";
 import {
@@ -309,8 +310,13 @@ export class Remote {
   ) {}
 
   /** Starts the device: its keys, its node, its machine and its loops.
-   * `changed` is called whenever what the page shows may have changed. */
-  static async start(options: Options, changed: () => void): Promise<Remote> {
+   * `changed` is called whenever what the page shows may have changed;
+   * `initialToken` is the offer token the page's URL carried, if any. */
+  static async start(
+    options: Options,
+    changed: () => void,
+    initialToken?: string | null | (() => string | null),
+  ): Promise<Remote> {
     await Promise.all([initDevice(), initRings()]);
     const store = await Store.open();
     let secret = await store.get<string>("static");
@@ -324,7 +330,7 @@ export class Remote {
     // The replay records go to IndexedDB under this name: a device that
     // reloads must not start its message sequences over, or Rings refuses
     // it ("Transaction sequence 0 forks").
-    const rings = "lispm-remote/rings";
+    const rings = "lispm-remote-rings";
     await store.prepareRings(rings);
     const provider = (await Provider.new_provider_with_storage(config, rings)) as Provider;
     let remote: Remote | null = null;
@@ -351,6 +357,10 @@ export class Remote {
     remote = new Remote(store, provider, listener, machine, pairing, options, renewal, changed);
     if (stale) {
       remote.notice = { tone: "error", text: MOVED_NOTICE };
+    }
+    const token = typeof initialToken === "function" ? initialToken() : initialToken;
+    if (token) {
+      remote.acceptToken(token, "link");
     }
     remote.run();
     return remote;
@@ -461,6 +471,9 @@ export class Remote {
           ? { tone: "ok", text: "Connected" }
           : { tone: "busy", text: "Waiting for LispM…" };
       case "idle":
+        if (this.waitingToPair) {
+          return { tone: "busy", text: "Pairing…" };
+        }
         return this.pairing
           ? { tone: "busy", text: "Connecting to LispM…" }
           : { tone: "bad", text: "Not paired" };
@@ -473,20 +486,42 @@ export class Remote {
   /** Pairs with the offer `token`, from LispM's QR code, read by the
    * camera or opened as its link, as soon as the device is on the network. */
   pairWith(token: string, how: "camera" | "link"): void {
-    this.token = token;
-    this.code = how;
-    this.codeAt = Date.now();
-    this.expires = expiry(token);
-    this.notice = null;
-    // A new code may come from a LispM Remote updated meanwhile.
-    this.otherVersion = null;
+    this.acceptToken(token, how);
+    if (this.peers > 0) {
+      this.proceed();
+    }
     this.changed();
     void this.watch();
   }
 
+  private acceptToken(token: string, how: "camera" | "link"): void {
+    this.stale = false;
+    if (this.phase !== "idle") {
+      this.apply(this.machine.close());
+    }
+    if (how === "link") {
+      keepToken(token);
+    } else {
+      clearToken();
+    }
+    this.token = token;
+    this.code = how;
+    this.codeAt = Date.now();
+    this.expires = expiry(token);
+    this.fingerprint = null;
+    this.state = null;
+    this.chat = null;
+    this.following = null;
+    this.followedAt = 0;
+    this.notice = null;
+    // A new code may come from a LispM Remote updated meanwhile.
+    this.otherVersion = null;
+  }
+
   /** Forgets the paired LispM on this device. */
   async forget(): Promise<void> {
-    if (this.machine.openP()) {
+    clearToken();
+    if (this.phase !== "idle") {
       this.apply(this.machine.close());
     }
     this.pairing = null;
@@ -755,14 +790,14 @@ export class Remote {
   private proceed(): void {
     if (this.stale) {
       this.stale = false;
-      if (this.machine.openP()) {
+      if (this.phase !== "idle") {
         this.apply(this.machine.close());
       }
     }
     const token = this.token;
-    if (token && (this.phase === "idle" || this.phase === "open")) {
+    if (token) {
       this.token = null;
-      if (this.machine.openP()) {
+      if (this.phase !== "idle") {
         this.apply(this.machine.close());
       }
       this.state = null;
@@ -786,6 +821,11 @@ export class Remote {
       this.apply(command());
     } catch (error) {
       this.phase = before;
+      if (phase === "pairing") {
+        clearToken();
+        this.code = null;
+        this.expires = null;
+      }
       this.notice = { tone: "error", text: messageOf(error) };
       this.changed();
     }
@@ -833,6 +873,7 @@ export class Remote {
           this.fingerprint = effect.fingerprint;
           break;
         case "paired":
+          clearToken();
           this.pairing = { responder: effect.responder, key: effect.key, did: this.did };
           this.pairedAt = Date.now();
           void this.store.put("pairing", this.pairing);
@@ -876,10 +917,13 @@ export class Remote {
             console.warn(`lispm-remote: ${conclusion}`);
           }
           if (this.phase === "pairing") {
+            if (effect.reason !== "abandoned") {
+              clearToken();
+            }
             this.fingerprint = null;
             this.code = null;
             this.expires = null;
-            if (!this.otherVersion) {
+            if (!this.otherVersion && effect.reason !== "abandoned") {
               this.notice = { tone: "error", text: pairingFailure(effect) };
             }
           } else if (effect.reason === "timed-out") {

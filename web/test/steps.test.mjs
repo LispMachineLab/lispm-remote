@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { clearToken, keepToken, takeToken, tokenOf } from "../dist/scan.js";
 import { clock, expiry, progress, steps } from "../dist/steps.js";
 
 const now = 1_000_000;
@@ -50,7 +51,8 @@ test("a seed that turns the device away says so", () => {
 test("joined, offline, and the code's link", () => {
   assert.equal(step(situation({ peers: 2 }), "join").state, "done");
   assert.equal(step(situation({ online: false }), "join").state, "failed");
-  assert.equal(step(situation({ code: "link" }), "scan").state, "skipped");
+  assert.equal(step(situation({ code: "link" }), "scan").state, "done");
+  assert.equal(step(situation({ code: "link" }), "scan").detail, "Opened from the QR code");
   assert.equal(step(situation({ code: "camera" }), "scan").state, "done");
 });
 
@@ -83,4 +85,65 @@ test("the offer's expiry is read from its token", () => {
   assert.equal(expiry(token), 1_761_234_567_890);
   assert.equal(expiry("short"), null);
   assert.equal(clock(65_000), "1:05");
+});
+
+test("the offer's token is read from URLs, hashes and query parameters", () => {
+  const token = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
+  assert.equal(tokenOf(token), token);
+  assert.equal(tokenOf(`#${token}`), token);
+  assert.equal(tokenOf(`#token=${token}`), token);
+  assert.equal(tokenOf(`https://lispm.ai/remote/#${token}`), token);
+  assert.equal(tokenOf(`https://lispm.ai/remote/?seed=https%3A%2F%2Fnode.rings.rs&token=${token}`), token);
+  assert.equal(tokenOf("?token=short"), null);
+  assert.equal(tokenOf("https://lispm.ai/remote/"), null);
+});
+
+test("takeToken reads the token from the URL, cleans the URL, and keeps it until cleared", () => {
+  const bytes = new Uint8Array(90);
+  new DataView(bytes.buffer).setBigUint64(81, BigInt(Date.now() + 60_000));
+  const token = Buffer.from(bytes).toString("base64url");
+  const storage = new Map();
+  let replaced = null;
+
+  globalThis.sessionStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  globalThis.history = {
+    replaceState: (_data, _unused, url) => {
+      replaced = url;
+    },
+  };
+  globalThis.location = {
+    pathname: "/remote/",
+    search: "?name=Phone",
+    hash: `#${token}`,
+  };
+
+  assert.equal(takeToken(), token);
+  assert.equal(replaced, "/remote/?name=Phone");
+
+  // A reload before pairing settles recovers the token from sessionStorage.
+  globalThis.location.hash = "";
+  replaced = null;
+  assert.equal(takeToken(), token);
+  assert.equal(replaced, null);
+
+  // Once pairing settles, clearToken drops it.
+  clearToken();
+  assert.equal(takeToken(), null);
+
+  // Query parameter ?token= is also supported and cleaned.
+  globalThis.location.search = `?seed=https%3A%2F%2Fnode.rings.rs&token=${token}`;
+  assert.equal(takeToken(), token);
+  assert.equal(replaced, "/remote/?seed=https%3A%2F%2Fnode.rings.rs");
+  clearToken();
+
+  // An expired token in sessionStorage is dropped.
+  new DataView(bytes.buffer).setBigUint64(81, BigInt(Date.now() - 1_000));
+  const expired = Buffer.from(bytes).toString("base64url");
+  keepToken(expired);
+  globalThis.location.search = "";
+  assert.equal(takeToken(), null);
 });

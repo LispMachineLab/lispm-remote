@@ -9,7 +9,7 @@
  * cannot be read out), its static secret ("static", hexadecimal) and its
  * pairing ("pairing", the `{responder, key}` of the machine's `paired`
  * effect, and the page's own address then).  The Rings node keeps its
- * stores beside them, under "lispm-remote/rings", written by the Rings
+ * stores beside them, under "lispm-remote-rings", written by the Rings
  * "replayFormat" names.
  */
 
@@ -19,9 +19,10 @@ const STORE = "keys";
 /** The Rings whose stores this page writes.  A store an earlier Rings
  * wrote may not decode: Rings 0.35 changed the replay record format
  * (RingsNetwork/rings#936), Rings 0.37 asks every store to be removed
- * (RingsNetwork/rings#1072), and Rings 0.38 changes the replay record
- * format again (RingsNetwork/rings#1059). */
-const REPLAY_FORMAT = "rings-0.38";
+ * (RingsNetwork/rings#1072), Rings 0.38 changes the replay record
+ * format again (RingsNetwork/rings#1059), and Rings 1.0-pre.5 changes
+ * binary Did and PublicKey encodings and IndexedDB row accounting. */
+const REPLAY_FORMAT = "rings-1.0-pre.5";
 
 /** The databases Rings's browser node keeps under its storage name. */
 const RINGS_DATABASES = [
@@ -94,8 +95,10 @@ export class Store {
    * between removes them again. */
   async prepareRings(rings: string): Promise<void> {
     if ((await this.get<string>("replayFormat")) === REPLAY_FORMAT) return;
-    for (const suffix of RINGS_DATABASES) {
-      await result(indexedDB.deleteDatabase(`${rings}${suffix}`));
+    for (const prefix of new Set([rings, "lispm-remote/rings"])) {
+      for (const suffix of RINGS_DATABASES) {
+        await result(indexedDB.deleteDatabase(`${prefix}${suffix}`));
+      }
     }
     await this.put("replayFormat", REPLAY_FORMAT);
   }

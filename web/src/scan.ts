@@ -4,13 +4,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The camera, through `getUserMedia`, and jsQR (vendor/jsQR.js, loaded as
- * a classic script) to read the code: Chrome on Linux has no
- * BarcodeDetector, and one decoder everywhere behaves the same everywhere.
+ * LispM's QR code is a URL, `https://lispm.ai/remote/#TOKEN`; the token is
+ * what follows `#` (or `?token=`), which browsers do not send to the server
+ * when carried in the hash.  Scanning the QR code with the device's camera
+ * opens the page with the token in its URL; the page takes the token,
+ * removes it from the address bar, and keeps it in `sessionStorage` until
+ * pairing finishes so a reload does not lose it.
  *
- * LispM's code is a URL, `https://lispm.ai/remote/#TOKEN`; the token is
- * what follows the `#`.  Browsers do not send that part to the server.
+ * When the page is opened on its own instead, the camera can also read the
+ * code in the page through `getUserMedia` and jsQR (vendor/jsQR.js, loaded
+ * as a classic script).
  */
+
+import { expiry } from "./steps.js";
+
+const PENDING_TOKEN = "lispm-remote.token";
 
 interface Code {
   readonly data: string;
@@ -26,22 +34,81 @@ declare const jsQR: (
 /** The widest image the decoder is given; larger frames are scaled down. */
 const WIDTH = 720;
 
-/** The offer token in `text`: what follows the `#` of LispM's URL, or the
- * token alone.  Null when `text` holds none. */
+/** The offer token in `text`: what follows `#` or `?token=` of LispM's URL,
+ * or the token alone.  Null when `text` holds none. */
 export function tokenOf(text: string): string | null {
-  const token = text.includes("#") ? text.slice(text.lastIndexOf("#") + 1) : text;
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let token = trimmed;
+  if (token.includes("#")) {
+    token = token.slice(token.lastIndexOf("#") + 1);
+    if (token.startsWith("token=")) {
+      token = token.slice("token=".length);
+    }
+  } else if (token.includes("?") || token.startsWith("token=")) {
+    const search = token.includes("?") ? token.slice(token.indexOf("?") + 1) : token;
+    token = new URLSearchParams(search).get("token") ?? "";
+  }
   return /^[A-Za-z0-9_-]{16,}$/.test(token) ? token : null;
 }
 
-/** Takes the offer token from the page's own URL, the way a phone's camera
- * app opens the code, and removes it from the URL and the history. */
-export function takeToken(): string | null {
-  if (!location.hash) {
+/** Keeps `token` for this tab until pairing settles, so a reload while
+ * joining does not drop the offer a camera scan opened the page with. */
+export function keepToken(token: string): void {
+  try {
+    sessionStorage.setItem(PENDING_TOKEN, token);
+  } catch {
+    // Storage is a convenience across reloads.
+  }
+}
+
+/** Drops the pending offer token kept for this tab. */
+export function clearToken(): void {
+  try {
+    sessionStorage.removeItem(PENDING_TOKEN);
+  } catch {
+    // Ignore when sessionStorage is unavailable.
+  }
+}
+
+function keptToken(now = Date.now()): string | null {
+  try {
+    const stored = sessionStorage.getItem(PENDING_TOKEN);
+    if (!stored) {
+      return null;
+    }
+    const token = tokenOf(stored);
+    const expires = token ? expiry(token) : null;
+    if (token && (expires === null || expires > now)) {
+      return token;
+    }
+    sessionStorage.removeItem(PENDING_TOKEN);
+    return null;
+  } catch {
     return null;
   }
-  const token = tokenOf(location.hash);
-  history.replaceState(null, "", `${location.pathname}${location.search}`);
-  return token;
+}
+
+/** Takes the offer token from the page's own URL, the way a phone's camera
+ * app opens the code, removes it from the URL and the history, and keeps it
+ * in `sessionStorage` until pairing settles. */
+export function takeToken(): string | null {
+  const query = new URLSearchParams(location.search);
+  const fromHash = location.hash ? tokenOf(location.hash) : null;
+  const fromQuery = query.has("token") ? tokenOf(query.get("token") ?? "") : null;
+  const token = fromHash ?? fromQuery;
+  if (location.hash || query.has("token")) {
+    query.delete("token");
+    const search = query.toString();
+    history.replaceState(null, "", `${location.pathname}${search ? `?${search}` : ""}`);
+  }
+  if (token) {
+    keepToken(token);
+    return token;
+  }
+  return keptToken();
 }
 
 /** Shows the camera in `video` until it sees a code with an offer, and

@@ -8,7 +8,7 @@
  * can follow one pairing on either screen:
  *
  *   join       join Rings Network through the seed
- *   scan       read LispM's code with the camera (skipped for the code's link)
+ *   scan       scan LispM's code with the camera to open the page (or in the page)
  *   reach      send the request to LispM, again every 2 s until it answers
  *   confirm    compare the fingerprint, before the code expires
  *   connected  paired, and LispM's state arrived
@@ -122,14 +122,16 @@ function join(s: Situation): Step {
 function scan(s: Situation): Step {
   switch (s.code) {
     case "link":
-      return step("scan", "skipped", "Opened from the code's link");
+      return step("scan", "done", "Opened from the QR code");
     case "camera":
       return step("scan", "done", "Read the code");
     default:
       return step(
         "scan",
         "active",
-        s.scanning ? "Point the camera at the code Emacs shows" : "In Emacs, run M-x lispm-remote-pair",
+        s.scanning
+          ? "Point the camera at the code Emacs shows"
+          : "In Emacs, run M-x lispm-remote-pair and scan the code with your camera",
       );
   }
 }

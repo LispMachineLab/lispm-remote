@@ -19,7 +19,7 @@ import { chatting, showAgents } from "./chat.js";
 import { closeWindows, openWindows, showingWindows } from "./windows.js";
 import { button, byId, h, rebuild } from "./dom.js";
 import { messageOf, type Options, Remote } from "./remote.js";
-import { scan, takeToken } from "./scan.js";
+import { clearToken, scan, takeToken } from "./scan.js";
 import { Stepper } from "./stepper.js";
 import { steps } from "./steps.js";
 
@@ -92,6 +92,7 @@ function showStatus(tone: string, text: string): void {
 // Pairing
 
 function startScan(): void {
+  clearToken();
   scanning?.abort();
   const controller = new AbortController();
   scanning = controller;
@@ -212,7 +213,8 @@ function draw(current: Remote): void {
   renderPair(current);
   showAgents(current, render);
   renderAbout(current);
-  windowsButton.hidden = !current.pairing || showingWindows();
+  windowsButton.hidden =
+    !current.pairing || current.waitingToPair || current.phase === "pairing" || showingWindows();
 }
 
 windowsButton.addEventListener("click", () => {
@@ -254,10 +256,24 @@ function render(): void {
 
 async function main(): Promise<void> {
   // First of all, so the token leaves the URL and the history at once.
-  const token = takeToken();
-  showStatus("busy", "Starting…");
+  let pendingToken = takeToken();
+  addEventListener("hashchange", () => {
+    const next = takeToken();
+    if (!next) {
+      return;
+    }
+    stopScan();
+    closeWindows();
+    if (remote) {
+      remote.pairWith(next, "link");
+      render();
+    } else {
+      pendingToken = next;
+    }
+  });
+  showStatus("busy", pendingToken ? "Pairing…" : "Starting…");
   try {
-    remote = await Remote.start(options(), render);
+    remote = await Remote.start(options(), render, () => pendingToken);
   } catch (error) {
     showStatus("bad", "LispM Remote could not start");
     noticeLine.className = "notice error";
@@ -267,9 +283,6 @@ async function main(): Promise<void> {
   }
   if (new URLSearchParams(location.search).has("debug")) {
     (globalThis as { lispmRemote?: Remote }).lispmRemote = remote;
-  }
-  if (token) {
-    remote.pairWith(token, "link");
   }
   render();
   // The countdown and the steps that linger move with the clock.

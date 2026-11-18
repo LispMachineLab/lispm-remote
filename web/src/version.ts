@@ -33,10 +33,12 @@ export function leftAlone(since: number, now: number): boolean {
   return since > 0 && now - since < MISMATCH_MS;
 }
 
-/** The version `text` starts with, as "0.36.0", or null.  Rings's node says
- * "0.36.0-99feaaf" when built from a checkout. */
+/** The version `text` starts with, as "0.36.0" or "1.0.0-pre.4", or null.
+ * Rings's node says "0.36.0-99feaaf" when built from a checkout. */
 export function versionNumber(text: unknown): string | null {
-  return typeof text === "string" ? (/^v?(\d+(?:\.\d+)*)/.exec(text)?.[1] ?? null) : null;
+  return typeof text === "string"
+    ? (/^v?(\d+(?:\.\d+)*(?:-[a-z]+\.\d+)?)/.exec(text)?.[1] ?? null)
+    : null;
 }
 
 /** Whether the join failure `message` says that the seed runs another Rings
