@@ -45,6 +45,19 @@ function result<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
+function deleted(request: IDBOpenDBRequest): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, 500);
+    request.onsuccess = done;
+    request.onerror = done;
+    request.onblocked = done;
+  });
+}
+
 function committed(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
@@ -62,10 +75,16 @@ export class Store {
     const opening = indexedDB.open(DATABASE, 1);
     opening.onupgradeneeded = () => opening.result.createObjectStore(STORE);
     const db = await result(opening);
+    db.onversionchange = () => db.close();
     // Losing the replay records would get the device refused by Rings, and
     // losing the keys would unpair it.
     void navigator.storage?.persist?.();
     return new Store(db);
+  }
+
+  /** Closes the database connection so another tab's operations are not blocked. */
+  close(): void {
+    this.db.close();
   }
 
   /** The value kept under `key`, if any. */
@@ -97,7 +116,7 @@ export class Store {
     if ((await this.get<string>("replayFormat")) === REPLAY_FORMAT) return;
     for (const prefix of new Set([rings, "lispm-remote/rings"])) {
       for (const suffix of RINGS_DATABASES) {
-        await result(indexedDB.deleteDatabase(`${prefix}${suffix}`));
+        await deleted(indexedDB.deleteDatabase(`${prefix}${suffix}`));
       }
     }
     await this.put("replayFormat", REPLAY_FORMAT);
