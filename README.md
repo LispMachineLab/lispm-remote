@@ -1,9 +1,9 @@
 # LispM Remote
 
 Reach a running [LispM](https://lispm.ai) from your phone or another computer. LispM shows a QR
-code; the device opens one web page and scans it. From then on, whenever LispM is running and
-online, the device can see what its agents are doing and answer them: approve a call, send a
-message, stop a turn.
+code; scan it with your phone's camera to open the web page and pair. From then on, whenever LispM
+is running and online, the device can see what its agents are doing and answer them: approve a call,
+send a message, stop a turn.
 
 There is no LispM server in between. Both ends join [Rings Network](https://github.com/RingsNetwork/rings),
 a peer-to-peer network that addresses peers by DID and connects them over WebRTC, so neither needs
@@ -52,8 +52,9 @@ Forget button. From there, `p` pairs another device.
 the same steps as the device's page, **Join, Scan, Reach, Confirm, Connected**, so you can follow
 one pairing on either screen.
 
-- **Scan.** The screen shows a QR code, with a bar counting down the two minutes it works. Open
-  lispm.ai/remote on the device and scan the code.
+- **Scan.** The screen shows a QR code, with a bar counting down the two minutes it works. Scan it
+  with your phone's camera to open lispm.ai/remote and pair (or open lispm.ai/remote and scan it
+  there).
 - **Confirm.** When the device asks, both screens show the same fingerprint. Approve it with `a`,
   refuse it with `r`, or click either button.
 - **Connected.** The screen shows the device's session opening.
@@ -150,11 +151,11 @@ The page is one static page: a little TypeScript, Rings's browser node, the devi
 its own, a WebCrypto P-256 key that cannot be read out of the browser, and keeps it, its static
 key and its pairing in IndexedDB, with the node's replay records beside them.
 
-It reads the offer from the QR code through the camera, or from its own URL: a phone's camera app
-opens `https://lispm.ai/remote/#TOKEN`, and the page takes the token and removes it from the URL.
+It reads the offer from its own URL when a phone's camera app opens `https://lispm.ai/remote/#TOKEN`
+(taking the token and removing it from the URL), or from the QR code through the camera in the page.
 Pairing shows as five steps, the same Emacs shows: **Join** Rings through the seed, with its retries;
-**Scan** the code in a viewfinder, skipped when the page came from the code's link; **Reach** LispM,
-counting the requests sent; **Confirm** the fingerprint, in large type, against a bar of the time the
+**Scan** the code, done at once when the camera opened the page from the code's link, or in a
+viewfinder; **Reach** LispM, counting the requests sent; **Confirm** the fingerprint, in large type, against a bar of the time the
 code has left; **Connected**, once LispM's state arrives. Reconnecting after the network dropped, or
 after a reload, shows Join, Reach and Connected, so you see what the page waits for. Each step's
 element carries `data-step` and `data-state`, which the browser test follows. Once paired, it lists LispM's agents,

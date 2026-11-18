@@ -48,7 +48,7 @@ use crate::node::NodeError;
 /// replay store holds.
 const FORMAT_FILE: &str = "transaction-replay.format";
 /// The Rings whose records this build writes.
-const FORMAT: &str = "rings-0.38";
+const FORMAT: &str = "rings-1.0-pre.5";
 
 /// The replay records of a node, which each of its processors opens.
 pub enum Replay {

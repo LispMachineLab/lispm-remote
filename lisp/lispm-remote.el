@@ -39,9 +39,10 @@
 ;; `lispm-remote-mismatch-seconds', and a device of another version of
 ;; LispM Remote's protocol is told which version this one speaks.
 ;;
-;; To pair, run `lispm-remote-pair': it shows a QR code.  Open
-;; lispm.ai/remote on the device and scan it.  Both screens then show the
-;; same fingerprint; press `a' to approve the device, `r' to refuse it.  The
+;; To pair, run `lispm-remote-pair': it shows a QR code.  Scan it with
+;; the device's camera to open lispm.ai/remote (or open lispm.ai/remote
+;; and scan it there).  Both screens then show the same fingerprint;
+;; press `a' to approve the device, `r' to refuse it.  The
 ;; code works once, for `lispm-remote-offer-seconds'.  `lispm-remote-devices'
 ;; lists the paired devices; `d' there forgets one.
 ;;
@@ -438,11 +439,11 @@ ran another Rings version lately."
 ;;   the device speaks: `(other-version PEER VERSION OURS)'.
 
 (defun lispm-remote--version-number (text)
-  "Return the version TEXT starts with, as \"0.36.0\", or nil.
+  "Return the version TEXT starts with, as \"0.36.0\" or \"1.0.0-pre.4\", or nil.
 Rings's node says \"0.36.0-99feaaf\" when built from a checkout, and its
-releases are tagged \"v0.36.0\"."
+releases are tagged \"v0.36.0\" or \"v1.0.0-pre.4\"."
   (and (stringp text)
-       (string-match "\\`v?\\([0-9]+\\(?:\\.[0-9]+\\)*\\)" text)
+       (string-match "\\`v?\\([0-9]+\\(?:\\.[0-9]+\\)*\\(?:-[a-z]+\\.[0-9]+\\)?\\)" text)
        (match-string 1 text)))
 
 (defun lispm-remote-rings-mismatch-p (error)
@@ -979,11 +980,18 @@ FINGERPRINT, when given, must be the one the device shows."
               left-margin-width 2)
   (add-hook 'kill-buffer-hook #'lispm-remote--stop-ticking nil t))
 
+(defun lispm-remote--qr-url (&optional offer)
+  "Return the URL the QR code for OFFER points at, carrying its token."
+  (let ((offer (or offer lispm-remote--offer))
+        (page (if (string-suffix-p "/" lispm-remote-page)
+                  lispm-remote-page
+                (concat lispm-remote-page "/"))))
+    (concat page "#" (plist-get offer :token))))
+
 (defun lispm-remote--qr-rows ()
   "Return the rows of the offer's QR code, strings of 1 and 0, with a
 quiet zone of four modules."
-  (let* ((rows (lispm-remote-core-qr (concat lispm-remote-page "#"
-                                             (plist-get lispm-remote--offer :token))))
+  (let* ((rows (lispm-remote-core-qr (lispm-remote--qr-url)))
          (blank (make-string (+ 8 (length (car rows))) ?0))
          (quiet (make-list 4 blank)))
     (append quiet (mapcar (lambda (row) (concat "0000" row "0000")) rows) quiet)))
@@ -1396,7 +1404,7 @@ STYLE is t for the main button, `danger' for a refusal, nil otherwise."
       (lispm-remote--insert-countdown offer))
      ((plist-get offer :token)
       (lispm-remote--insert-code offer)
-      (insert (format "\nOpen %s on your phone or computer and scan this code.\nIt works once.\n\n"
+      (insert (format "\nScan this code with your phone's camera to open %s and pair.\nIt works once.\n\n"
                       (propertize page 'face 'bold)))
       (lispm-remote--insert-countdown offer)
       (insert "\n" (lispm-remote--network-line) "\n")

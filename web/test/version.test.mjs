@@ -67,6 +67,8 @@ test("a seed of another Rings version is told by its words", () => {
 test("the node's version is read without its commit", () => {
   assert.equal(versionNumber("0.36.0-99feaaf"), "0.36.0");
   assert.equal(versionNumber("0.36.0"), "0.36.0");
+  assert.equal(versionNumber("1.0.0-pre.4-5b7cba8"), "1.0.0-pre.4");
+  assert.equal(versionNumber("1.0.0-pre.4"), "1.0.0-pre.4");
   assert.equal(versionNumber("unknown"), null);
   assert.equal(versionNumber(undefined), null);
 });

@@ -597,6 +597,9 @@ tester, bound as BINDINGS says: (PHONE)."
   (skip-unless (lispm-remote-node-test--module-p))
   (lispm-remote-test--with-world (_relay _phone)
     (lispm-remote-pair)
+    (let ((lispm-remote-page "https://lispm.ai/remote"))
+      (should (equal (lispm-remote--qr-url '(:token "AQID"))
+                     "https://lispm.ai/remote/#AQID")))
     (let* ((rows (lispm-remote--qr-rows))
            (side (length rows))
            (file (make-temp-file "lispm-remote-qr" nil ".pbm")))
@@ -667,7 +670,7 @@ tester, bound as BINDINGS says: (PHONE)."
         (with-current-buffer (lispm-remote--render)
           (let ((text (buffer-string)))
             (should (string-search "✔ Join ── ◉ Scan ── ○ Reach" text))
-            (should (string-search "scan this code" text))
+            (should (string-search "Scan this code with your phone's camera" text))
             (should (string-match-p "1:[23][0-9] left" text))
             (should (string-search "On Rings, 1 peer" text)))
           ;; The screen redraws itself while it waits, and stops when
@@ -1085,6 +1088,8 @@ were on, off the network: no node, no seed joined."
   (should-not (lispm-remote-rings-mismatch-p nil))
   (should (equal (lispm-remote--version-number "0.36.0-99feaaf") "0.36.0"))
   (should (equal (lispm-remote--version-number "0.36.0") "0.36.0"))
+  (should (equal (lispm-remote--version-number "1.0.0-pre.4-5b7cba8") "1.0.0-pre.4"))
+  (should (equal (lispm-remote--version-number "1.0.0-pre.4") "1.0.0-pre.4"))
   (should-not (lispm-remote--version-number "unknown")))
 
 (ert-deftest lispm-remote-test-a-seed-of-another-rings-is-named-and-left-alone ()

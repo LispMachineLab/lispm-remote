@@ -289,7 +289,7 @@ export function chatting(): boolean {
 export function showAgents(current: Remote, again: () => void): void {
   remote = current;
   render = again;
-  if (!current.pairing) {
+  if (!current.pairing || current.waitingToPair || current.phase === "pairing") {
     list.hidden = true;
     view.hidden = true;
     current.follow(null);

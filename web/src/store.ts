@@ -19,9 +19,10 @@ const STORE = "keys";
 /** The Rings whose stores this page writes.  A store an earlier Rings
  * wrote may not decode: Rings 0.35 changed the replay record format
  * (RingsNetwork/rings#936), Rings 0.37 asks every store to be removed
- * (RingsNetwork/rings#1072), and Rings 0.38 changes the replay record
- * format again (RingsNetwork/rings#1059). */
-const REPLAY_FORMAT = "rings-0.38";
+ * (RingsNetwork/rings#1072), Rings 0.38 changes the replay record
+ * format again (RingsNetwork/rings#1059), and Rings 1.0-pre.5 changes
+ * binary Did and PublicKey encodings and IndexedDB row accounting. */
+const REPLAY_FORMAT = "rings-1.0-pre.5";
 
 /** The databases Rings's browser node keeps under its storage name. */
 const RINGS_DATABASES = [
