@@ -21,10 +21,11 @@ import { button, byId, h, rebuild } from "./dom.js";
 import { messageOf, type Options, Remote } from "./remote.js";
 import { clearToken, scan, takeToken } from "./scan.js";
 import { Stepper } from "./stepper.js";
-import { steps } from "./steps.js";
+import { expiry, steps } from "./steps.js";
 
 const DEFAULT_SEED = "https://node.rings.rs";
-const DEFAULT_ICE = "stun://stun.l.google.com:19302";
+const DEFAULT_ICE =
+  "stun://stun.l.google.com:19302;stun://stun.cloudflare.com:3478;stun://stun.chat.bilibili.com:3478";
 
 /** A short name for this browser and system, as "Safari on iPhone". */
 function deviceName(): string {
@@ -272,8 +273,45 @@ async function main(): Promise<void> {
     }
   });
   showStatus("busy", pendingToken ? "Pairing…" : "Starting…");
+  const opts = options();
+  if (pendingToken) {
+    const now = Date.now();
+    let seedHost = opts.seed;
+    try {
+      seedHost = new URL(opts.seed).host;
+    } catch {
+      // Keep raw seed string.
+    }
+    flow = "pair";
+    pairSection.hidden = false;
+    stepper.update(
+      "pair",
+      steps({
+        flow: "pair",
+        online: navigator.onLine !== false,
+        peers: 0,
+        joinAttempts: 0,
+        nextJoinAt: 0,
+        refused: false,
+        seed: seedHost,
+        scanning: false,
+        code: "link",
+        phase: "idle",
+        sends: 0,
+        sent: false,
+        unanswered: false,
+        fingerprint: null,
+        since: now,
+        expires: expiry(pendingToken),
+        open: false,
+        state: false,
+        now,
+      }),
+      { scanning: false, fingerprint: null },
+    );
+  }
   try {
-    remote = await Remote.start(options(), render, () => pendingToken);
+    remote = await Remote.start(opts, render, () => pendingToken);
   } catch (error) {
     showStatus("bad", "LispM Remote could not start");
     noticeLine.className = "notice error";

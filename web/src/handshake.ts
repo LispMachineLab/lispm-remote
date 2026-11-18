@@ -23,19 +23,24 @@
 /** How long a handshake may refuse joins before the page drops it. */
 export const STUCK_MS = 10_000;
 
-/** How long after a reflexive or relay candidate ICE gathering waits for more. */
-export const REFLEXIVE_SETTLE_MS = 300;
+/** How long after an IPv4 reflexive or relay candidate ICE gathering waits for more. */
+export const REFLEXIVE_SETTLE_MS = 500;
 
-/** How long after a host-only candidate ICE gathering waits for STUN or TURN. */
+/** How long after a host or IPv6-only candidate ICE gathering waits for IPv4 STUN or TURN. */
 export const HOST_SETTLE_MS = 3_000;
 
+const IPV4_REFLEXIVE = /\b(?:\d{1,3}\.){3}\d{1,3}\s+\d+\s+typ (?:srflx|relay)\b/;
+
 /** The settle wait, in milliseconds, for a candidate line or SDP `text`, or
- * null when `text` carries no candidate. */
+ * null when `text` carries no candidate.  Only an IPv4 `srflx` or `relay`
+ * candidate takes the short settle window, so an IPv6 cellular candidate on
+ * a dual-stack phone does not cut off gathering before the IPv4 STUN
+ * candidate needed for an IPv4 seed arrives. */
 export function gatherSettleDelay(text: string): number | null {
-  if (/\btyp (?:srflx|relay)\b/.test(text)) {
+  if (IPV4_REFLEXIVE.test(text)) {
     return REFLEXIVE_SETTLE_MS;
   }
-  if (/\btyp host\b|^a=candidate:/m.test(text)) {
+  if (/\btyp (?:host|srflx|relay|prflx)\b|^a=candidate:/m.test(text)) {
     return HOST_SETTLE_MS;
   }
   return null;
@@ -59,6 +64,8 @@ export function settleIceGathering(
     static [SETTLED] = true;
     private settled = false;
     private reflexive = false;
+    private notified = false;
+    private gatheringHandler: ((this: RTCPeerConnection, ev: Event) => unknown) | null = null;
     private timer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(...args: ConstructorParameters<typeof RTCPeerConnection>) {
@@ -86,25 +93,51 @@ export function settleIceGathering(
       }
     }
 
-    private armTimer(text: string): void {
+    private finishGathering(): void {
+      this.timer = null;
       if (this.settled || super.iceGatheringState === "complete") {
         return;
       }
-      if (/\btyp (?:srflx|relay)\b/.test(text)) {
+      this.settled = true;
+      this.notified = false;
+      const event = new Event("icegatheringstatechange");
+      this.dispatchEvent(event);
+      if (!this.notified && typeof this.gatheringHandler === "function") {
+        this.gatheringHandler.call(this, event);
+      }
+    }
+
+    private armTimer(text: string, fallbackMs: number | null = null): void {
+      if (this.settled || super.iceGatheringState === "complete") {
+        return;
+      }
+      if (IPV4_REFLEXIVE.test(text)) {
         this.reflexive = true;
       }
-      const delay = this.reflexive ? REFLEXIVE_SETTLE_MS : gatherSettleDelay(text);
+      const delay = this.reflexive
+        ? REFLEXIVE_SETTLE_MS
+        : (gatherSettleDelay(text) ?? fallbackMs);
       if (delay === null) {
         return;
       }
       this.clearTimer();
-      this.timer = setTimeout(() => {
-        this.timer = null;
-        if (!this.settled && super.iceGatheringState !== "complete") {
-          this.settled = true;
-          this.dispatchEvent(new Event("icegatheringstatechange"));
-        }
-      }, delay);
+      this.timer = setTimeout(() => this.finishGathering(), delay);
+    }
+
+    override get onicegatheringstatechange(): ((this: RTCPeerConnection, ev: Event) => unknown) | null {
+      return this.gatheringHandler;
+    }
+
+    override set onicegatheringstatechange(
+      handler: ((this: RTCPeerConnection, ev: Event) => unknown) | null,
+    ) {
+      this.gatheringHandler = handler;
+      super.onicegatheringstatechange = handler
+        ? (event: Event) => {
+            this.notified = true;
+            return handler.call(this, event);
+          }
+        : null;
     }
 
     override get iceGatheringState(): RTCIceGatheringState {
@@ -117,8 +150,8 @@ export function settleIceGathering(
       this.clearTimer();
       await super.setLocalDescription(description);
       const sdp = this.localDescription?.sdp ?? "";
-      if (this.timer === null && sdp) {
-        this.armTimer(sdp);
+      if (this.timer === null) {
+        this.armTimer(sdp, HOST_SETTLE_MS);
       }
     }
 

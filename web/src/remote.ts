@@ -81,7 +81,8 @@ const RETRY_MS = 2_000;
 const GIVE_UP_MS = 20_000;
 const JOIN_TIMEOUT_MS = 20_000;
 /** How long a join that succeeded may take to show a connected peer. */
-const JOIN_GRACE_MS = 5_000;
+const JOIN_GRACE_MS = 8_000;
+const TAB_CHANNEL = "lispm-remote";
 
 /** What the page is configured with: the URL, or defaults. */
 export interface Options {
@@ -295,6 +296,9 @@ export class Remote {
   private token: string | null = null;
   private readonly commands = new Map<string, Command>();
   private warnedOfRenewal = false;
+  private stopped = false;
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
   private readonly displayListeners: ((payload: Uint8Array) => void)[] = [];
   private readonly channelListeners: ((open: boolean) => void)[] = [];
 
@@ -308,6 +312,57 @@ export class Remote {
     private readonly renewal: Renewal,
     private readonly changed: () => void,
   ) {}
+
+  private static async openProvider(
+    store: Store,
+    ice: string,
+    initialKey: Awaited<ReturnType<typeof delegatee>>["key"],
+    base: string,
+  ): Promise<Provider> {
+    const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(TAB_CHANNEL) : null;
+    let key = initialKey;
+    const tryOpen = async (name: string): Promise<Provider> => {
+      const config = ProcessorConfig.new(NETWORK_ID, ice, key, STABILIZE_SECONDS);
+      const backup = config.delegatee_key();
+      try {
+        const provider = (await Provider.new_provider_with_storage(config, name)) as Provider;
+        backup.free();
+        return provider;
+      } catch (error) {
+        key = backup;
+        throw error;
+      }
+    };
+    try {
+      channel?.postMessage("release-storage");
+      await store.prepareRings(base);
+      for (let wait = 0; wait < 10; wait++) {
+        try {
+          return await tryOpen(base);
+        } catch (error) {
+          if (!/held by another open node/i.test(messageOf(error))) {
+            throw error;
+          }
+          channel?.postMessage("release-storage");
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+      }
+      for (let slot = 2; slot <= 4; slot++) {
+        const fallback = `${base}-${slot}`;
+        await store.prepareRings(fallback);
+        try {
+          return await tryOpen(fallback);
+        } catch (error) {
+          if (!/held by another open node/i.test(messageOf(error)) || slot === 4) {
+            throw error;
+          }
+        }
+      }
+      throw new Error(`Browser storage "${base}" is held by another open node`);
+    } finally {
+      channel?.close();
+    }
+  }
 
   /** Starts the device: its keys, its node, its machine and its loops.
    * `changed` is called whenever what the page shows may have changed;
@@ -327,13 +382,11 @@ export class Remote {
     }
     let pairing = (await store.get<Pairing>("pairing")) ?? null;
     const { key, renewal } = await delegatee(await account(store));
-    const config = ProcessorConfig.new(NETWORK_ID, options.ice, key, STABILIZE_SECONDS);
     // The replay records go to IndexedDB under this name: a device that
     // reloads must not start its message sequences over, or Rings refuses
     // it ("Transaction sequence 0 forks").
     const rings = "lispm-remote-rings";
-    await store.prepareRings(rings);
-    const provider = (await Provider.new_provider_with_storage(config, rings)) as Provider;
+    const provider = await Remote.openProvider(store, options.ice, key, rings);
     let remote: Remote | null = null;
     provider.on(
       NAMESPACE,
@@ -392,9 +445,22 @@ export class Remote {
   }
 
   private run(): void {
-    setInterval(() => this.tick(), TICK_MS);
-    setInterval(() => void this.watch(), WATCH_MS);
+    this.tickTimer = setInterval(() => this.tick(), TICK_MS);
+    this.watchTimer = setInterval(() => void this.watch(), WATCH_MS);
+    if (typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel(TAB_CHANNEL);
+      channel.onmessage = (event: MessageEvent) => {
+        if (event.data === "release-storage") {
+          channel.close();
+          this.releaseStorage();
+        }
+      };
+    }
+    addEventListener("pagehide", () => this.releaseStorage());
     addEventListener("online", () => {
+      if (this.stopped) {
+        return;
+      }
       this.lost();
       this.joinNow();
       void this.watch();
@@ -403,13 +469,20 @@ export class Remote {
     // A page shown again, or hidden, has nobody looking at it yet, so it
     // may reload to renew its key.
     document.addEventListener("visibilitychange", () => {
+      if (this.stopped) {
+        return;
+      }
       this.renew(false);
       if (document.visibilityState === "visible" && this.peers === 0) {
         this.joinNow();
         void this.watch();
       }
     });
-    addEventListener("offline", () => this.lost());
+    addEventListener("offline", () => {
+      if (!this.stopped) {
+        this.lost();
+      }
+    });
     // Which Rings this page runs, to say so when a seed runs another.
     void (this.provider.request("nodeInfo", {}) as Promise<{ version?: string }>).then(
       (info) => {
@@ -418,6 +491,29 @@ export class Remote {
       (error: unknown) => console.debug("lispm-remote: nodeInfo failed:", error),
     );
     void this.watch();
+  }
+
+  /** Releases this tab's database and Rings storage Web Lock when a newer tab
+   * opens or this tab is unloaded. */
+  private releaseStorage(): void {
+    if (this.stopped) {
+      return;
+    }
+    this.stopped = true;
+    if (this.tickTimer !== null) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
+    }
+    if (this.watchTimer !== null) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+    try {
+      this.store.close();
+    } catch {
+      // Ignore close errors.
+    }
+    void this.provider.close().catch(() => {});
   }
 
   /** Whether a join failed lately because the seed runs another Rings
@@ -681,7 +777,7 @@ export class Remote {
   }
 
   private async watch(): Promise<void> {
-    if (this.watching) {
+    if (this.watching || this.stopped) {
       return;
     }
     this.watching = true;

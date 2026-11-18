@@ -83,7 +83,7 @@ test("joins every second reach a stuck handshake within the limit", () => {
   assert.equal(dropped, STUCK_MS);
 });
 
-test("gatherSettleDelay distinguishes reflexive, host, and empty text", () => {
+test("gatherSettleDelay distinguishes IPv4 reflexive, IPv6 reflexive, host, and empty text", () => {
   assert.equal(
     gatherSettleDelay("candidate:1 1 udp 1677729535 14.155.204.30 51628 typ srflx raddr 0.0.0.0 rport 0"),
     REFLEXIVE_SETTLE_MS,
@@ -91,6 +91,10 @@ test("gatherSettleDelay distinguishes reflexive, host, and empty text", () => {
   assert.equal(
     gatherSettleDelay("candidate:2 1 udp 16777215 203.0.113.5 54000 typ relay raddr 0.0.0.0 rport 0"),
     REFLEXIVE_SETTLE_MS,
+  );
+  assert.equal(
+    gatherSettleDelay("candidate:2 1 udp 1677729535 240e:3b0:1234::1 54000 typ srflx raddr :: rport 0"),
+    HOST_SETTLE_MS,
   );
   assert.equal(
     gatherSettleDelay("candidate:3 1 udp 2113937151 test.local 56555 typ host"),
