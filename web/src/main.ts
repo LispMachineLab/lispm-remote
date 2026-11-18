@@ -24,8 +24,7 @@ import { Stepper } from "./stepper.js";
 import { expiry, steps } from "./steps.js";
 
 const DEFAULT_SEED = "https://node.rings.rs";
-const DEFAULT_ICE =
-  "stun://162.159.207.0:3478;stun://74.125.250.129:19302;stun://stun.cloudflare.com:3478;stun://stun.chat.bilibili.com:3478;stun://stun.l.google.com:19302";
+const DEFAULT_ICE = "";
 
 /** A short name for this browser and system, as "Safari on iPhone". */
 function deviceName(): string {
