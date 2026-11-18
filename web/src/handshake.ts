@@ -64,12 +64,14 @@ export function settleIceGathering(
     static [SETTLED] = true;
     private settled = false;
     private reflexive = false;
+    private readonly hasIceServers: boolean;
     private notified = false;
     private gatheringHandler: ((this: RTCPeerConnection, ev: Event) => unknown) | null = null;
     private timer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(...args: ConstructorParameters<typeof RTCPeerConnection>) {
       super(...args);
+      this.hasIceServers = (args[0]?.iceServers?.length ?? 0) > 0;
       this.addEventListener("icecandidate", (event: RTCPeerConnectionIceEvent) => {
         if (!event.candidate) {
           this.clearTimer();
@@ -111,7 +113,7 @@ export function settleIceGathering(
       if (this.settled || super.iceGatheringState === "complete") {
         return;
       }
-      if (IPV4_REFLEXIVE.test(text)) {
+      if (IPV4_REFLEXIVE.test(text) || (!this.hasIceServers && gatherSettleDelay(text) !== null)) {
         this.reflexive = true;
       }
       const delay = this.reflexive
