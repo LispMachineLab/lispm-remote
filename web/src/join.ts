@@ -48,5 +48,7 @@ export function rateLimited(message: string): boolean {
  * gives alike for a network that is down and for an answer it may not show
  * the page, as one without CORS headers. */
 export function unseen(message: string): boolean {
-  return /error sending request|failed to fetch|networkerror|load failed/i.test(message);
+  return /error sending request|browser rpc fetch (?:failed|rejected)|failed to fetch|networkerror|load failed/i.test(
+    message,
+  );
 }
