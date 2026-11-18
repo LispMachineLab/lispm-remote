@@ -9,7 +9,16 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { holding, inFlight, STUCK_MS, stuck } from "../dist/handshake.js";
+import {
+  gatherSettleDelay,
+  HOST_SETTLE_MS,
+  holding,
+  inFlight,
+  REFLEXIVE_SETTLE_MS,
+  STUCK_MS,
+  settleIceGathering,
+  stuck,
+} from "../dist/handshake.js";
 
 const SEED = "0x50e92c90d7a57bd01f4184eda98f87c382da4e61";
 const OTHER = "0x3bbba89641b3470b86f516a9e91862ce6b23765b";
@@ -72,4 +81,77 @@ test("joins every second reach a stuck handshake within the limit", () => {
     }
   }
   assert.equal(dropped, STUCK_MS);
+});
+
+test("gatherSettleDelay distinguishes reflexive, host, and empty text", () => {
+  assert.equal(
+    gatherSettleDelay("candidate:1 1 udp 1677729535 14.155.204.30 51628 typ srflx raddr 0.0.0.0 rport 0"),
+    REFLEXIVE_SETTLE_MS,
+  );
+  assert.equal(
+    gatherSettleDelay("candidate:2 1 udp 16777215 203.0.113.5 54000 typ relay raddr 0.0.0.0 rport 0"),
+    REFLEXIVE_SETTLE_MS,
+  );
+  assert.equal(
+    gatherSettleDelay("candidate:3 1 udp 2113937151 test.local 56555 typ host"),
+    HOST_SETTLE_MS,
+  );
+  assert.equal(gatherSettleDelay("v=0\r\na=candidate:3 1 udp 2113937151 10.0.0.2 56555 typ host\r\n"), HOST_SETTLE_MS);
+  assert.equal(gatherSettleDelay("v=0\r\ns=-\r\n"), null);
+});
+
+test("settleIceGathering completes WebKit-style gathering once srflx candidates settle", async () => {
+  class FakePeerConnection extends EventTarget {
+    #state = "new";
+    localDescription = null;
+    onicegatheringstatechange = null;
+
+    get iceGatheringState() {
+      return this.#state;
+    }
+
+    dispatchEvent(event) {
+      if (event.type === "icegatheringstatechange" && typeof this.onicegatheringstatechange === "function") {
+        this.onicegatheringstatechange(event);
+      }
+      return super.dispatchEvent(event);
+    }
+
+    async setLocalDescription(description) {
+      this.#state = "gathering";
+      this.localDescription = description ?? { type: "offer", sdp: "v=0\r\n" };
+    }
+
+    close() {
+      this.#state = "closed";
+    }
+  }
+
+  const scope = { RTCPeerConnection: FakePeerConnection };
+  settleIceGathering(scope);
+  // Idempotent when called a second time.
+  const Wrapped = scope.RTCPeerConnection;
+  settleIceGathering(scope);
+  assert.equal(scope.RTCPeerConnection, Wrapped);
+
+  const pc = new scope.RTCPeerConnection();
+  let notified = 0;
+  pc.onicegatheringstatechange = () => {
+    if (pc.iceGatheringState === "complete") {
+      notified++;
+    }
+  };
+  await pc.setLocalDescription({ type: "offer", sdp: "v=0\r\n" });
+  assert.equal(pc.iceGatheringState, "gathering");
+
+  const event = new Event("icecandidate");
+  event.candidate = {
+    candidate: "candidate:1 1 udp 1677729535 14.155.204.30 51628 typ srflx raddr 0.0.0.0 rport 0",
+  };
+  pc.dispatchEvent(event);
+
+  await new Promise((resolve) => setTimeout(resolve, REFLEXIVE_SETTLE_MS + 80));
+  assert.equal(pc.iceGatheringState, "complete");
+  assert.equal(notified, 1);
+  pc.close();
 });

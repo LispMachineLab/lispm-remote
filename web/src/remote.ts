@@ -48,7 +48,7 @@
 import initDevice, { generateStatic, Initiator } from "lispm-remote-web";
 import initRings, { ProcessorConfig, Provider, type ProviderListener } from "rings-node";
 import { account, delegatee } from "./account.js";
-import { type Held, holding, stuck } from "./handshake.js";
+import { type Held, holding, settleIceGathering, stuck } from "./handshake.js";
 import { type JoinFailure, joinDelay, rateLimited, unseen } from "./join.js";
 import { MOVED_NOTICE, moved, type Pairing } from "./pairing.js";
 import { RENEWAL_NOTICE, type Renewal, renewing } from "./renewal.js";
@@ -317,6 +317,7 @@ export class Remote {
     changed: () => void,
     initialToken?: string | null | (() => string | null),
   ): Promise<Remote> {
+    settleIceGathering();
     await Promise.all([initDevice(), initRings()]);
     const store = await Store.open();
     let secret = await store.get<string>("static");
