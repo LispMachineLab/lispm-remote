@@ -9,7 +9,7 @@
  * cannot be read out), its static secret ("static", hexadecimal) and its
  * pairing ("pairing", the `{responder, key}` of the machine's `paired`
  * effect, and the page's own address then).  The Rings node keeps its
- * stores beside them, under "lispm-remote/rings", written by the Rings
+ * stores beside them, under "lispm-remote-rings", written by the Rings
  * "replayFormat" names.
  */
 
@@ -95,8 +95,10 @@ export class Store {
    * between removes them again. */
   async prepareRings(rings: string): Promise<void> {
     if ((await this.get<string>("replayFormat")) === REPLAY_FORMAT) return;
-    for (const suffix of RINGS_DATABASES) {
-      await result(indexedDB.deleteDatabase(`${rings}${suffix}`));
+    for (const prefix of new Set([rings, "lispm-remote/rings"])) {
+      for (const suffix of RINGS_DATABASES) {
+        await result(indexedDB.deleteDatabase(`${prefix}${suffix}`));
+      }
     }
     await this.put("replayFormat", REPLAY_FORMAT);
   }

@@ -1542,7 +1542,9 @@ device paired before cannot open one until it pairs again.  Its device
 key stays, so the new pairing replaces the old record.  A device paired
 under any later Rings keeps its address, whichever Rings runs now."
   (let ((rings (plist-get device :rings)))
-    (and (stringp rings) (version<= lispm-remote--addresses-since rings))))
+    (and (stringp rings)
+         (version<= lispm-remote--addresses-since
+                    (replace-regexp-in-string "[-+].*\\'" "" rings)))))
 
 (defun lispm-remote--insert-device (device)
   "Insert a line for the paired DEVICE, with a button forgetting it."

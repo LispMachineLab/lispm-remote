@@ -746,8 +746,9 @@ tester, bound as BINDINGS says: (PHONE)."
   ;; A device notes the Rings it paired under: the node's, or the Rings that
   ;; last moved addresses when the node had not said yet.  Neither is told to
   ;; pair again under a later Rings, nor while LispM Remote is off.
-  (let ((noted (list '(:rings "0.37") '(:rings "0.37.0") '(:rings "0.38.0"))))
-    (dolist (running '(nil "0.37.0" "0.38.0" "0.39.1"))
+  (let ((noted (list '(:rings "0.37") '(:rings "0.37.0") '(:rings "0.38.0")
+                     '(:rings "1.0.0-pre.5"))))
+    (dolist (running '(nil "0.37.0" "0.38.0" "0.39.1" "1.0.0-pre.5"))
       (let ((lispm-remote--rings running))
         (dolist (device noted)
           (should (lispm-remote--device-current-p device)))

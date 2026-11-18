@@ -330,7 +330,7 @@ export class Remote {
     // The replay records go to IndexedDB under this name: a device that
     // reloads must not start its message sequences over, or Rings refuses
     // it ("Transaction sequence 0 forks").
-    const rings = "lispm-remote/rings";
+    const rings = "lispm-remote-rings";
     await store.prepareRings(rings);
     const provider = (await Provider.new_provider_with_storage(config, rings)) as Provider;
     let remote: Remote | null = null;
