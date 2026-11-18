@@ -38,11 +38,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # lispm-prebuilt, which downloads the module.
+      # lispm-ui (including lispm-prebuilt), which downloads the module.
       - uses: actions/checkout@v7
         with:
-          repository: LispMachineLab/lispm-prebuilt
-          path: .deps/lispm-prebuilt
+          repository: LispMachineLab/lispm-ui
+          path: .deps/lispm-ui
       - uses: Swatinem/rust-cache@v2
       - uses: purcell/setup-emacs@v8.0
         with:
@@ -76,7 +76,7 @@ jobs:
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
       - name: Test
-        run: sudo env "PATH=$PATH" E2E_ARTIFACTS="$PWD/e2e-artifacts" LISPM_PREBUILT="$PWD/.deps/lispm-prebuilt" test/e2e/run.sh
+        run: sudo env "PATH=$PATH" E2E_ARTIFACTS="$PWD/e2e-artifacts" LISPM_UI="$PWD/.deps/lispm-ui" test/e2e/run.sh
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
