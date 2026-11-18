@@ -801,7 +801,14 @@ export class Remote {
         Date.now() >= this.nextJoinAt &&
         !this.mismatched()
       ) {
-        await this.join();
+        if (this.held !== null) {
+          if (stuck(this.held, Date.now())) {
+            await this.dropHeld();
+            await this.join();
+          }
+        } else {
+          await this.join();
+        }
       }
     } catch (error) {
       this.joinError = messageOf(error);
@@ -838,7 +845,13 @@ export class Remote {
   private async release(message: string): Promise<void> {
     const now = Date.now();
     this.held = holding(this.held, message, now);
-    if (!stuck(this.held, now)) {
+    if (stuck(this.held, now)) {
+      await this.dropHeld();
+    }
+  }
+
+  private async dropHeld(): Promise<void> {
+    if (!this.held) {
       return;
     }
     const { peer } = this.held;

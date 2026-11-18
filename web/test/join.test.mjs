@@ -50,7 +50,9 @@ test("a rate limit is told by its status or its words", () => {
 
 test("a request the browser shows no answer to is told apart from the seed's own refusals", () => {
   const cors = "Internal rpc services error: Server error: Connect remote rpc server failed: Client error: error sending request..";
+  const rpcRejected = "Internal rpc services error: Server error: Remote RPC failure: browser RPC fetch rejected";
   assert.ok(unseen(cors));
+  assert.ok(unseen(rpcRejected));
   assert.ok(unseen("TypeError: Failed to fetch"));
   assert.ok(!unseen("Create offer info failed: Found existing transport when answer offer from remote node.."));
 });
