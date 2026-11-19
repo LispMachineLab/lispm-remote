@@ -24,7 +24,7 @@
 export const STUCK_MS = 10_000;
 
 /** How long after an IPv4 reflexive or relay candidate ICE gathering waits for more. */
-export const REFLEXIVE_SETTLE_MS = 500;
+export const REFLEXIVE_SETTLE_MS = 250;
 
 /** How long after a host or IPv6-only candidate ICE gathering waits for IPv4 STUN or TURN. */
 export const HOST_SETTLE_MS = 3_000;
