@@ -3602,8 +3602,8 @@ dependencies = [
 
 [[package]]
 name = "rings-aez"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "aes",
  "subtle",
@@ -3613,8 +3613,8 @@ dependencies = [
 
 [[package]]
 name = "rings-codec"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "postcard",
  "serde",
@@ -3622,8 +3622,8 @@ dependencies = [
 
 [[package]]
 name = "rings-core"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -3676,8 +3676,8 @@ dependencies = [
 
 [[package]]
 name = "rings-derive"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3686,8 +3686,8 @@ dependencies = [
 
 [[package]]
 name = "rings-dns-relay"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "async-trait",
  "hickory-proto",
@@ -3708,8 +3708,8 @@ dependencies = [
 
 [[package]]
 name = "rings-gateway"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "async-trait",
  "ipnet",
@@ -3727,8 +3727,8 @@ dependencies = [
 
 [[package]]
 name = "rings-measure"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -3736,8 +3736,8 @@ dependencies = [
 
 [[package]]
 name = "rings-network-policy"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "thiserror 1.0.69",
  "url",
@@ -3745,8 +3745,8 @@ dependencies = [
 
 [[package]]
 name = "rings-node"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "anyhow",
  "arrayref",
@@ -3800,8 +3800,8 @@ dependencies = [
 
 [[package]]
 name = "rings-rpc"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "async-trait",
  "base64 0.13.1",
@@ -3821,8 +3821,8 @@ dependencies = [
 
 [[package]]
 name = "rings-runtime"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "futures",
  "futures-timer",
@@ -3836,8 +3836,8 @@ dependencies = [
 
 [[package]]
 name = "rings-transport"
-version = "1.0.0-pre.5"
-source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.5#3e2c808041edbd1c6fd493eb3b767518ed3aeb2c"
+version = "1.0.0-pre.6"
+source = "git+https://github.com/RingsNetwork/rings?tag=v1.0.0-pre.6#f48965b80f2ffd389245937b0b8fdd664401a7b3"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3848,9 +3848,11 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tracing",
  "url",
+ "webpki-roots",
  "webrtc",
 ]
 
