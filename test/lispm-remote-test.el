@@ -747,8 +747,8 @@ tester, bound as BINDINGS says: (PHONE)."
   ;; last moved addresses when the node had not said yet.  Neither is told to
   ;; pair again under a later Rings, nor while LispM Remote is off.
   (let ((noted (list '(:rings "0.37") '(:rings "0.37.0") '(:rings "0.38.0")
-                     '(:rings "1.0.0-pre.5"))))
-    (dolist (running '(nil "0.37.0" "0.38.0" "0.39.1" "1.0.0-pre.5"))
+                     '(:rings "1.0.0-pre.5") '(:rings "1.0.0-pre.6"))))
+    (dolist (running '(nil "0.37.0" "0.38.0" "0.39.1" "1.0.0-pre.5" "1.0.0-pre.6"))
       (let ((lispm-remote--rings running))
         (dolist (device noted)
           (should (lispm-remote--device-current-p device)))
