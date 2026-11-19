@@ -6,8 +6,8 @@
 ;; the one here is refused.  `lispm-prebuilt-batch-pin' writes it once
 ;; the workflow has published that release.
 
-(:version "8efe12ed9c421db8"
- :modules (("aarch64-apple-darwin" . "e0314c335167d900f0c8eaeb9d18c8207ee50fdf95b4994f0a920735a1f9447e")
-           ("aarch64-unknown-linux-gnu" . "b208d8a87df479958e4e49d01b8d1ad27517b96b7f89681528c9f128f98d9cb0")
-           ("x86_64-apple-darwin" . "22a321443bd5f837c77d2c93db5f5f69b8c331257cf0a49ec9961b2934bab014")
-           ("x86_64-unknown-linux-gnu" . "fa200afb0f2b4d1052afc90ef302f40b6432c209332b980ca5a9112df9dffa45")))
+(:version "bcdbac4405170a62"
+ :modules (("aarch64-apple-darwin" . "dbc175cf531e06504549469798db3ccabc4bff14b8877b48c5233391a2188777")
+           ("aarch64-unknown-linux-gnu" . "f0c1f84a3927937e729c236a8c55e84a2b81755e0476909e84d0a23053d2e137")
+           ("x86_64-apple-darwin" . "1d2bf3e19679cd7b9f61ba93bb77c6099343c1c27e6d42c856200ad2ba9040da")
+           ("x86_64-unknown-linux-gnu" . "bb3b6ddb5e46eca8a001e3933522f5286b3ec236ffa9ed8681c120abb373f837")))

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026  Ryan.K
 
 ;; Author: Ryan.K
-;; Version: 0.5.0
+;; Version: 0.5.1
 ;; Package-Requires: ((emacs "30.1") (lispm-ui "0.8.0"))
 ;; Keywords: comm
 ;; URL: https://github.com/LispMachineLab/lispm-remote
