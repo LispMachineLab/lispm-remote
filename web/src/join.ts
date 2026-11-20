@@ -7,16 +7,16 @@
  * When joining Rings through the seed fails, the page asks again, less
  * and less often:
  *
- *   failures 1–9     every 1 s   a seed holds a vanished connection for
- *                                about 5 s ("Found existing transport")
- *   failures 10–29   every 2 s
- *   failures 30–59   every 5 s
+ *   failures 1–9     every 4 s   a seed holds an answering transport
+ *                                without hitting its POST rate limit
+ *   failures 10–29   every 5 s
+ *   failures 30–59   every 8 s
  *   failures 60–     every 15 s
  *
  * A seed that answers but not to this page, as one that rate-limits its
  * address (node.rings.rs sends 429 without CORS headers, so the browser
  * reports only a failed request), is asked every 30 s, then 60 s, then
- * every 2 minutes.  Waits of 2 s and more are a fifth longer or shorter at
+ * every 2 minutes.  Waits are a fifth longer or shorter at
  * random, so that pages do not ask in step.
  */
 
@@ -30,13 +30,13 @@ export function joinDelay(failures: number, refusals: number, random: () => numb
     refusals > 0
       ? Math.min(120_000, 30_000 * 2 ** (refusals - 1))
       : failures < 10
-        ? 1_000
+        ? 4_000
         : failures < 30
-          ? 2_000
+          ? 5_000
           : failures < 60
-            ? 5_000
+            ? 8_000
             : 15_000;
-  return base === 1_000 ? base : Math.round(base * (0.8 + 0.4 * random()));
+  return Math.round(base * (0.8 + 0.4 * random()));
 }
 
 /** Whether the failure `message` says the seed limits how often it is asked. */

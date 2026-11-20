@@ -686,7 +686,7 @@ version, if any: seeds while it is off the network, and devices."
                              '(command code path buffer name url query))
                    (and input
                         (condition-case nil
-                            (json-serialize input)
+                            (decode-coding-string (json-serialize input) 'utf-8)
                           (error (prin1-to-string input))))
                    "")))
     (truncate-string-to-width (string-trim text) lispm-remote--summary-length nil nil "…")))

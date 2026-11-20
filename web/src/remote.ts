@@ -49,7 +49,7 @@ import initDevice, { generateStatic, Initiator } from "lispm-remote-web";
 import initRings, { ProcessorConfig, Provider, type ProviderListener } from "rings-node";
 import { account, delegatee } from "./account.js";
 import { type Held, holding, settleIceGathering, stuck } from "./handshake.js";
-import { type JoinFailure, joinDelay, rateLimited, unseen } from "./join.js";
+import { type JoinFailure, joinDelay, rateLimited } from "./join.js";
 import { MOVED_NOTICE, moved, type Pairing } from "./pairing.js";
 import { RENEWAL_NOTICE, type Renewal, renewing } from "./renewal.js";
 import { clearToken, keepToken } from "./scan.js";
@@ -863,22 +863,12 @@ export class Remote {
     }
   }
 
-  /** Why the join failed with `message`.  A request the browser does not
-   * show an answer to is asked once more, without CORS: if the seed answers
-   * that, it is there and turns the page away. */
+  /** Why the join failed with `message`. */
   private async failure(message: string): Promise<JoinFailure> {
     if (rateLimited(message)) {
       return "refused";
     }
-    if (!unseen(message) || navigator.onLine === false) {
-      return "network";
-    }
-    try {
-      await timeout(fetch(this.options.seed, { mode: "no-cors", cache: "no-store" }), 5_000, "Asking the seed");
-      return "refused";
-    } catch {
-      return "network";
-    }
+    return "network";
   }
 
   /** Joins at the next look, as at first, without waiting out the delay. */

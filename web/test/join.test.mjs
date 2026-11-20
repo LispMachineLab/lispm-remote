@@ -12,17 +12,17 @@ import { joinDelay, rateLimited, unseen } from "../dist/join.js";
 
 const middle = () => 0.5;
 
-test("joins go every second while a seed may hold the old connection", () => {
+test("joins go every 4 seconds while a seed may hold the old connection", () => {
   for (let failures = 0; failures < 10; failures++) {
-    assert.equal(joinDelay(failures, 0, Math.random), 1_000);
+    assert.equal(joinDelay(failures, 0, middle), 4_000);
   }
 });
 
 test("joins that keep failing are spaced out, to every 15 s", () => {
-  assert.equal(joinDelay(10, 0, middle), 2_000);
-  assert.equal(joinDelay(29, 0, middle), 2_000);
-  assert.equal(joinDelay(30, 0, middle), 5_000);
-  assert.equal(joinDelay(59, 0, middle), 5_000);
+  assert.equal(joinDelay(10, 0, middle), 5_000);
+  assert.equal(joinDelay(29, 0, middle), 5_000);
+  assert.equal(joinDelay(30, 0, middle), 8_000);
+  assert.equal(joinDelay(59, 0, middle), 8_000);
   assert.equal(joinDelay(60, 0, middle), 15_000);
   assert.equal(joinDelay(10_000, 0, middle), 15_000);
 });
@@ -34,9 +34,11 @@ test("a seed that turns the page away is asked every 30 s, then 60 s, then 2 min
   assert.equal(joinDelay(50, 40, middle), 120_000);
 });
 
-test("waits of 2 s and more are a fifth longer or shorter at random", () => {
-  assert.equal(joinDelay(10, 0, () => 0), 1_600);
-  assert.equal(joinDelay(10, 0, () => 1), 2_400);
+test("waits are a fifth longer or shorter at random", () => {
+  assert.equal(joinDelay(1, 0, () => 0), 3_200);
+  assert.equal(joinDelay(1, 0, () => 1), 4_800);
+  assert.equal(joinDelay(10, 0, () => 0), 4_000);
+  assert.equal(joinDelay(10, 0, () => 1), 6_000);
   assert.equal(joinDelay(1, 1, () => 0), 24_000);
   assert.equal(joinDelay(1, 1, () => 1), 36_000);
 });
