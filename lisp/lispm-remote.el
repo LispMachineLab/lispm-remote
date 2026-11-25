@@ -3,8 +3,8 @@
 ;; Copyright (C) 2026  Ryan.K
 
 ;; Author: Ryan.K
-;; Version: 0.5.1
-;; Package-Requires: ((emacs "30.1") (lispm-ui "0.8.0"))
+;; Version: 0.5.2
+;; Package-Requires: ((emacs "30.1") (lispm-ui "0.12.0"))
 ;; Keywords: comm
 ;; URL: https://github.com/LispMachineLab/lispm-remote
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -101,6 +101,7 @@
 (require 'subr-x)
 (require 'svg)
 (require 'tabulated-list)
+(require 'lispm-ui-ask)
 (require 'lispm-remote-node)
 
 (declare-function lispm-remote-core-generate-static "lispm-remote-core")
@@ -1561,7 +1562,8 @@ under any later Rings keeps its address, whichever Rings runs now."
     (insert-text-button "Forget" 'face 'link 'follow-link t
                         'help-echo (format "Forget %s" (plist-get device :name))
                         'action (lambda (_)
-                                  (when (yes-or-no-p (format "Forget %s? " (plist-get device :name)))
+                                  (when (lispm-ui-confirm (format "Forget %s?" (plist-get device :name))
+                                                          nil "Forget")
                                     (lispm-remote-forget peer))))
     (insert "\n")
     (unless (lispm-remote--device-current-p device)
@@ -1639,7 +1641,8 @@ under any later Rings keeps its address, whichever Rings runs now."
   "Forget the device at point, after asking."
   (interactive)
   (when-let* ((peer (tabulated-list-get-id))
-              ((yes-or-no-p (format "Forget %s? " (aref (tabulated-list-get-entry) 0)))))
+              ((lispm-ui-confirm (format "Forget %s?" (aref (tabulated-list-get-entry) 0))
+                                 nil "Forget")))
     (lispm-remote-forget peer)
     (revert-buffer)))
 

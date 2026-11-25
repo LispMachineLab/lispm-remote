@@ -1329,4 +1329,30 @@ page speaks; a page that hears LispM in another version stops there."
       (lispm-remote-mode -1)
       (delete-directory lispm-remote-directory t))))
 
+(ert-deftest lispm-remote-test-forget-asks-in-lispm-ui ()
+  "Forget confirmations in the device list and home buffer use `lispm-ui'."
+  (let* ((alerts nil)
+         (forgotten nil)
+         (lispm-ui-alert-function
+         (lambda (_icon message buttons _detail)
+           (push (list message (mapcar #'car buttons)) alerts)
+           (nth 1 (seq-find (lambda (b) (eq (nth 2 b) 'default)) buttons)))))
+    (cl-letf (((symbol-function 'lispm-remote-forget)
+               (lambda (peer) (push peer forgotten)))
+              ((symbol-function 'lispm-remote--devices)
+               (lambda () '((:peer "peer-1" :name "Phone" :paired-at 1700000000000)))))
+      (with-temp-buffer
+        (lispm-remote-devices-mode)
+        (lispm-remote--devices-refresh)
+        (tabulated-list-print)
+        (goto-char (point-min))
+        (lispm-remote-devices-forget))
+      (with-temp-buffer
+        (lispm-remote--insert-device '(:peer "peer-2" :name "Tablet" :paired-at 1700000000000))
+        (goto-char (point-min))
+        (search-forward "Forget")
+        (button-activate (button-at (1- (point))))))
+    (should (equal forgotten '("peer-2" "peer-1")))
+    (should (= (length alerts) 2))))
+
 ;;; lispm-remote-test.el ends here
